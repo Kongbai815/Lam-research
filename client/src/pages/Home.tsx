@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Bot, Bookmark, BookmarkCheck, ChevronDown, ExternalLink, FileText, Mail, MessageCircle, Moon, Phone, Search, Send, Settings, SlidersHorizontal, Sparkles, Sun, User, X } from "lucide-react";
 import { type ResearcherRecord } from "@/lib/data";
-import { effectiveCitations, qualityBreakdown, qualityScore } from "@/lib/metrics";
 import { cn } from "@/lib/utils";
 
 type WeightKey = "query" | "research";
@@ -257,17 +256,12 @@ function AffiliationSummary({ researcher, className = "", noteClassName = "text-
 
 function metricDescription(label: string) {
   const normalized = label.toLowerCase();
-  if (normalized.includes("query relevance") || normalized === "q") return "Q_norm: query relevance normalized within the visible result set. Higher means this author matched the search intent more strongly.";
-  if (normalized.includes("research impact") || normalized === "r" || normalized.includes("recent citation")) return "R_raw is citations received by the matched papers during the selected citation year range. R_norm log-normalizes that value within the result set.";
-  if (normalized.includes("profile quality") || normalized.includes("quality score")) return "A separate profile-quality diagnostic from 0-100. It combines normalized H-index, i10-index, citation density, recency, productivity, and a low-weight citation signal.";
+  if (normalized.includes("query relevance") || normalized.includes("q relevance") || normalized === "q" || normalized.includes("q_norm")) return "Q_norm: query relevance normalized within the visible result set. Higher means this author matched the search intent more strongly.";
+  if (normalized.includes("research impact") || normalized.includes("r impact") || normalized === "r" || normalized.includes("r_norm") || normalized.includes("recent citation")) return "R_raw is citations received by matched papers during the selected citation year range. R_norm uses log(1 + R_raw), then normalizes within the result set.";
+  if (normalized.includes("final")) return "Final Score = wQ * Q_norm + wR * R_norm. Slider values are converted into shares before calculation.";
   if (normalized.includes("h-index") || normalized === "h") return "OpenAlex h-index. H=81 means the author has at least 81 works that each received at least 81 citations.";
   if (normalized.includes("raw citation")) return "Total OpenAlex cited_by_count for the author profile. This favors older and high-citation fields, so it is not used alone.";
-  if (normalized.includes("effective")) return "A softened citation estimate used by ResearchAI. It discounts older papers and author-position effects so raw citation volume does not dominate ranking.";
-  if (normalized.includes("citation density")) return "Effective citations divided by total works, then log-normalized. It rewards impact per publication instead of only output volume.";
   if (normalized.includes("citation")) return "Citation signal from OpenAlex counts. The main ranking uses R for citation-window impact, not lifetime citations.";
-  if (normalized.includes("i10")) return "OpenAlex i10-index. It counts how many works have at least 10 citations, then ResearchAI log-normalizes it.";
-  if (normalized.includes("recency")) return "Recent matched publication activity. Higher means the author's visible OpenAlex works include newer papers.";
-  if (normalized.includes("productivity")) return "OpenAlex works_count, log-normalized. It captures output volume without letting very large publication counts overwhelm the score.";
   return "";
 }
 
@@ -340,6 +334,15 @@ function finalRankingScore(qNorm: number, rNorm: number, weights: Record<WeightK
   const total = weights.query + weights.research;
   if (total <= 0) return 0;
   return (qNorm * weights.query + rNorm * weights.research) / total;
+}
+
+function rankingWeightShares(weights: Record<WeightKey, number>) {
+  const total = weights.query + weights.research;
+  if (total <= 0) return { query: 0, research: 0 };
+  return {
+    query: weights.query / total,
+    research: weights.research / total,
+  };
 }
 
 function paretoIds(list: ResearcherRecord[]) {
@@ -1144,10 +1147,8 @@ function rawResearcherSnapshot(researcher: ResearcherRecord) {
     queryRelevanceNorm: researcher.queryRelevanceNorm || 0,
     recentCitationImpactNorm: researcher.recentCitationImpactNorm || 0,
     finalScore: researcher.finalScore || 0,
-    effectiveCitations: Math.round(effectiveCitations(researcher)),
     hIndex: researcher.hIndex,
     i10Index: researcher.i10Index,
-    qualityScore: qualityScore(researcher),
     careerStartYear: researcher.careerStartYear,
     yearsActive: researcher.yearsActive,
     role: researcher.role || null,
@@ -1174,42 +1175,82 @@ function rawResearcherSnapshot(researcher: ResearcherRecord) {
   };
 }
 
-function QualityBreakdown({ researcher, compact = false }: { researcher: ResearcherRecord; compact?: boolean }) {
-  const items = qualityBreakdown(researcher);
-  const total = qualityScore(researcher);
+function RankingBreakdown({ researcher, weights, compact = false }: { researcher: ResearcherRecord; weights: Record<WeightKey, number>; compact?: boolean }) {
+  const qNorm = researcher.queryRelevanceNorm || 0;
+  const rNorm = researcher.recentCitationImpactNorm || 0;
+  const shares = rankingWeightShares(weights);
+  const finalScore = finalRankingScore(qNorm, rNorm, weights);
+  const items = [
+    {
+      key: "q",
+      label: "Q_norm",
+      value: qNorm,
+      weight: shares.query,
+      contribution: qNorm * shares.query,
+      description: "Query relevance: how strongly this researcher matches the current search.",
+      color: "bg-emerald-400/80",
+    },
+    {
+      key: "r",
+      label: "R_norm",
+      value: rNorm,
+      weight: shares.research,
+      contribution: rNorm * shares.research,
+      description: "Citation impact: log-normalized R_raw from the selected citation year range.",
+      color: "bg-orange-400/85",
+    },
+  ];
   return (
     <div className={cn("rounded-lg border border-white/8 bg-white/[0.025] p-4", compact && "p-3.5")}>
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-200">Profile Quality Breakdown</h3>
-        <span className="font-mono text-sm font-extrabold text-emerald-300">{total}</span>
+        <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-200">Ranking Score</h3>
+        <span className="font-mono text-sm font-extrabold text-blue-300">{Math.round(finalScore)}</span>
       </div>
-      <p className="mt-2 text-[11px] leading-5 text-slate-500">This diagnostic is separate from Q. Q now means query relevance; R means citation impact inside the selected citation year range.</p>
+      <p className="mt-2 text-[11px] leading-5 text-slate-500">
+        Final Score = wQ * Q_norm + wR * R_norm. R_raw = {formatNumber(researcher.recentCitations || 0)} citations received during {researcher.citationStartYear || "n/a"}-{researcher.citationEndYear || "n/a"}.
+      </p>
       <div className="mt-3 space-y-2.5">
         {items.map((item) => (
           <div key={item.key}>
             <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
               <span className="truncate text-slate-300" title={item.description}>{item.label}</span>
-              <span className="shrink-0 font-mono text-slate-500">{Math.round(item.value)} x {item.weight}% = {item.contribution.toFixed(1)}</span>
+              <span className="shrink-0 font-mono text-slate-500">{Math.round(item.value)} x {Math.round(item.weight * 100)}% = {item.contribution.toFixed(1)}</span>
             </div>
-            {!compact && <p className="mb-1.5 text-[11px] leading-5 text-slate-500">{metricDescription(item.label)}</p>}
+            {!compact && <p className="mb-1.5 text-[11px] leading-5 text-slate-500">{item.description}</p>}
             <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full rounded-full bg-emerald-400/80" style={{ width: `${Math.min(100, Math.max(0, item.value))}%` }} />
+              <div className={cn("h-full rounded-full", item.color)} style={{ width: `${Math.min(100, Math.max(0, item.value))}%` }} />
             </div>
           </div>
         ))}
       </div>
+      {!compact && (
+        <div className="mt-4 grid gap-2 text-[11px] sm:grid-cols-3">
+          <div className="rounded-md border border-white/8 bg-black/10 p-2">
+            <div className="text-slate-500">Q_norm</div>
+            <div className="mt-1 font-mono font-bold text-emerald-300">{Math.round(qNorm)}</div>
+          </div>
+          <div className="rounded-md border border-white/8 bg-black/10 p-2">
+            <div className="text-slate-500">R_raw</div>
+            <div className="mt-1 font-mono font-bold text-orange-300">{formatNumber(researcher.recentCitations || 0)}</div>
+          </div>
+          <div className="rounded-md border border-white/8 bg-black/10 p-2">
+            <div className="text-slate-500">R_norm</div>
+            <div className="mt-1 font-mono font-bold text-orange-300">{Math.round(rNorm)}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, query, settings }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; list: ResearcherRecord[]; query: string; settings: AppSettings }) {
+function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, query, settings, weights }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; list: ResearcherRecord[]; query: string; settings: AppSettings; weights: Record<WeightKey, number> }) {
   return (
     <aside className="w-[var(--side-summary-width)] shrink-0 overflow-y-auto border-l border-white/8 bg-[#070a10] p-5">
       {researcher ? (
         <>
           <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4"><div className="flex items-start gap-3"><div className="flex h-14 w-14 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-lg font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div><div className="min-w-0"><h2 className="font-bold text-slate-100">{researcher.name}</h2><AffiliationSummary researcher={researcher} className="text-xs text-slate-500" /><p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-blue-300">{affiliationDisplay(researcher).country} - since {researcher.careerStartYear || "n/a"}</p><span title={researcher.matchReason || researcher.whyMatched} className="mt-2 inline-flex max-w-full rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span></div></div><button onClick={onToggleSave} className={cn("mt-4 w-full rounded-md border border-white/8 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved Researcher" : "Save Researcher"}</button></div>
           <div className="mt-4 grid grid-cols-3 gap-2.5">{[["Q relevance", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R impact", formatNumber(researcher.recentCitations || 0), "text-orange-300"], ["H-index", researcher.hIndex, "text-sky-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><div className={cn("font-mono text-xl font-extrabold", color as string)}>{value}</div><div className="text-[11px] text-slate-400">{label}</div></div>)}</div>
-          <div className="mt-4"><QualityBreakdown researcher={researcher} compact /></div>
+          <div className="mt-4"><RankingBreakdown researcher={researcher} weights={weights} compact /></div>
           <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-200"><Sparkles className="h-3.5 w-3.5 text-blue-400" />AI Research Summary</h3><p className="text-xs leading-relaxed text-slate-400">{researcher.name} is linked to {affiliationDisplay(researcher).primary} and specializes in {researcher.primaryTopic}. Their matched papers received {formatNumber(researcher.recentCitations || 0)} citations in the selected citation year range; lifetime OpenAlex citations are {formatNumber(researcher.totalCitations)}.</p></div>
           <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2.5">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 5).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3.5 py-1.5 text-xs font-semibold text-blue-100">{topic}</span>)}</div><button onClick={onOpenDetail} className="mt-4 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Open detailed profile</button></div>
         </>
@@ -1223,10 +1264,11 @@ function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, qu
   );
 }
 
-function DetailPage({ researcher, isSaved, user, onToggleSave, onBack, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; onToggleSave: () => void; onBack: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
+function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; weights: Record<WeightKey, number>; onToggleSave: () => void; onBack: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
   const paperCitationSample = researcher.papers.reduce((sum, paper) => sum + paper.citations, 0);
   const citationCoverage = citationCoverageRatio(researcher);
   const rawSnapshot = rawResearcherSnapshot(researcher);
+  const weightShares = rankingWeightShares(weights);
   const headlineMetrics = [
     { label: "Q relevance", value: Math.round(researcher.queryRelevanceNorm || 0), caption: "Normalized query fit", color: "text-emerald-400", description: metricDescription("Query relevance") },
     { label: "R impact", value: formatNumber(researcher.recentCitations || 0), caption: `${researcher.citationStartYear || ""}-${researcher.citationEndYear || ""}`, color: "text-orange-400", description: metricDescription("Research impact") },
@@ -1248,7 +1290,7 @@ function DetailPage({ researcher, isSaved, user, onToggleSave, onBack, onLogout,
             </div>
           ))}
         </section>
-        <section className="mt-6"><QualityBreakdown researcher={researcher} /></section>
+        <section className="mt-6"><RankingBreakdown researcher={researcher} weights={weights} /></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />AI Research Summary</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime OpenAlex records still show {formatNumber(researcher.totalCitations)} citations, {researcher.totalWorks} works, and an H-index of {researcher.hIndex}. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">OpenAlex does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6">
@@ -1265,7 +1307,7 @@ function DetailPage({ researcher, isSaved, user, onToggleSave, onBack, onLogout,
               <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Profile record fields</summary>
               <div className="border-t border-white/8 p-4">
                 <div className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
-                  {[["Name", researcher.name], ["Institution", researcher.institution], ["Matched institution", researcher.matchedInstitution || "n/a"], ["Current institution", researcher.currentInstitution || "n/a"], ["Country", affiliationDisplay(researcher).country || "n/a"], ["Region", researcher.region || "n/a"], ["Field", researcher.field || "n/a"], ["Subfield", researcher.subfield || "n/a"], ["Domain", researcher.domain || "n/a"], ["Primary topic", researcher.primaryTopic], ["Match source", matchSourceLabel(researcher.matchSource)], ["Match reason", researcher.matchReason || researcher.whyMatched || "n/a"], ["Citation year range", `${researcher.citationStartYear || "n/a"}-${researcher.citationEndYear || "n/a"}`], ["Q_norm", Math.round(researcher.queryRelevanceNorm || 0)], ["R_raw", researcher.recentCitations || 0], ["R_norm", Math.round(researcher.recentCitationImpactNorm || 0)], ["Final score", Math.round(researcher.finalScore || 0)], ["Career start", researcher.careerStartYear || "n/a"], ["Years active", researcher.yearsActive || "n/a"], ["Total works", researcher.totalWorks], ["Lifetime citations", researcher.totalCitations], ["H-index", researcher.hIndex], ["I10-index", researcher.i10Index], ["Profile quality", qualityScore(researcher)]].map(([label, value]) => <div key={label as string}><div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</div><div className="mt-1 text-slate-200">{String(value)}</div></div>)}
+                  {[["Name", researcher.name], ["Institution", researcher.institution], ["Matched institution", researcher.matchedInstitution || "n/a"], ["Current institution", researcher.currentInstitution || "n/a"], ["Country", affiliationDisplay(researcher).country || "n/a"], ["Region", researcher.region || "n/a"], ["Field", researcher.field || "n/a"], ["Subfield", researcher.subfield || "n/a"], ["Domain", researcher.domain || "n/a"], ["Primary topic", researcher.primaryTopic], ["Match source", matchSourceLabel(researcher.matchSource)], ["Match reason", researcher.matchReason || researcher.whyMatched || "n/a"], ["Citation year range", `${researcher.citationStartYear || "n/a"}-${researcher.citationEndYear || "n/a"}`], ["Q_norm", Math.round(researcher.queryRelevanceNorm || 0)], ["R_raw", researcher.recentCitations || 0], ["R_norm", Math.round(researcher.recentCitationImpactNorm || 0)], ["wQ", `${Math.round(weightShares.query * 100)}%`], ["wR", `${Math.round(weightShares.research * 100)}%`], ["Final score", Math.round(researcher.finalScore || 0)], ["Career start", researcher.careerStartYear || "n/a"], ["Years active", researcher.yearsActive || "n/a"], ["Total works", researcher.totalWorks], ["Lifetime citations", researcher.totalCitations], ["H-index", researcher.hIndex], ["I10-index", researcher.i10Index]].map(([label, value]) => <div key={label as string}><div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</div><div className="mt-1 text-slate-200">{String(value)}</div></div>)}
                 </div>
               </div>
             </details>
@@ -1428,7 +1470,7 @@ export default function Home() {
     fontSize: `${interfaceScale}%`,
   } as React.CSSProperties & Record<string, string>;
   const content = detail ? (
-    <DetailPage researcher={detail} isSaved={savedIds.has(detail.id)} user={currentUser} onToggleSave={() => toggleSave(detail.id)} onBack={() => setDetailId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
+    <DetailPage researcher={detail} isSaved={savedIds.has(detail.id)} user={currentUser} weights={filters.weights} onToggleSave={() => toggleSave(detail.id)} onBack={() => setDetailId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
   ) : !activeQuery ? (
     <LandingPage query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} settings={settings} user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
   ) : (
@@ -1446,7 +1488,7 @@ export default function Home() {
           <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} />
           <PaginationBar page={currentPage} total={resultList.length} onPageChange={setPage} />
         </section>
-        <SideSummary researcher={selected} isSaved={selected ? savedIds.has(selected.id) : false} onToggleSave={() => selected && toggleSave(selected.id)} onOpenDetail={() => selected && setDetailId(selected.id)} list={pagedResults} query={activeQuery} settings={settings} />
+        <SideSummary researcher={selected} isSaved={selected ? savedIds.has(selected.id) : false} onToggleSave={() => selected && toggleSave(selected.id)} onOpenDetail={() => selected && setDetailId(selected.id)} list={pagedResults} query={activeQuery} settings={settings} weights={filters.weights} />
       </div>
     </main>
   );

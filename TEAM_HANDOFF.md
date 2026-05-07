@@ -68,7 +68,6 @@ The app now exposes:
 - Final score: `wQ * Q_norm + wR * R_norm`
 - H-index
 - Lifetime citations
-- Profile quality breakdown as a separate diagnostic
 - Result match source, such as exact name, author search, topic relevance, or institution search
 
 The goal is to make it easier to understand why someone appears in a result list.
@@ -246,6 +245,5 @@ Write-Host "Created $zip"
 - Institution matches can reflect historical paper affiliations, not only current employment.
 - Q is normalized query relevance, not an official OpenAlex field.
 - R is computed from OpenAlex `counts_by_year` on the matched works and depends on the selected citation year range.
-- Profile quality is a separate diagnostic heuristic and should not be treated as an official academic metric.
 - AI chat requires each tester to provide their own API key in Settings.
 - This is still a preview build and not yet a hosted production deployment.
