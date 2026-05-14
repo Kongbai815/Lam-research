@@ -17,3 +17,5 @@ services:
         value: "false"
       - key: OPENALEX_API_KEY
         sync: false
+      - key: RANKING_API_URL
+        value: https://researcher-ranking-szk6rqcdwa-uc.a.run.app

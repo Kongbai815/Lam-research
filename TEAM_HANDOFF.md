@@ -72,6 +72,24 @@ The app now exposes:
 
 The goal is to make it easier to understand why someone appears in a result list.
 
+## External Ranking Backend Proxy
+
+The Express server can proxy requests to the separate FastAPI ranking backend:
+
+```text
+GET  /api/ranking/health
+POST /api/ranking/rank
+```
+
+Configure the upstream service with:
+
+```text
+RANKING_API_URL=https://researcher-ranking-szk6rqcdwa-uc.a.run.app
+RANKING_API_AUTH_TOKEN=
+```
+
+The browser should call the Express routes above. It should not call the Cloud Run URL directly. Backend-only secrets for the FastAPI service, such as MySQL credentials or Pinecone keys, should stay in that service's own cloud environment and should not be copied into this app.
+
 ### 5. Citation year range
 
 The year selector now means citation year range, not publication year range.
