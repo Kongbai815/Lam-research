@@ -478,7 +478,7 @@ function toResearcherRecord(aggregated: AggregatedAuthor, author: OpenAlexAuthor
     .slice(0, 8)
     .map(([name, sharedPapers]) => ({ name, sharedPapers, type: "OpenAlex coauthor" }));
   const recencyScore = years.length ? Math.max(0, 100 - Math.max(0, CURRENT_YEAR - Math.max(...years)) * 8) : 0;
-  const qScore = Math.round(Math.min(100, Math.log1p(totalCitations) * 2.4 + Math.log1p(hIndex) * 5 + Math.log1p(totalWorks) * 3 + recencyScore * 0.17));
+  const qScore = Math.round(Math.min(100, Math.max(0, aggregated.queryRelevance || aggregated.relevance)));
   const seniorityScore = Math.min(100, Math.max(0, CURRENT_YEAR - careerStartYear) * 3);
 
   return {
@@ -507,7 +507,7 @@ function toResearcherRecord(aggregated: AggregatedAuthor, author: OpenAlexAuthor
     qScore,
     recencyScore,
     seniorityScore,
-    compositeScore: Math.round(aggregated.relevance + qScore + recencyScore * 0.2),
+    compositeScore: qScore,
     primaryTopic: topic.topic,
     topics: topic.topics?.length ? topic.topics : [topic.topic].filter(Boolean),
     subfield: topic.subfield,

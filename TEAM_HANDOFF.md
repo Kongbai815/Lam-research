@@ -13,7 +13,7 @@ Main updates:
 - Added explicit search modes: Auto, Name, Query, and Institution.
 - Name search now merges obvious duplicate OpenAlex author profiles, so split records for the same person are combined into one researcher profile.
 - Institution search now separates the matched institution from the author's current or last-known institution. For example, someone can be matched through Hebrew University of Jerusalem while their current OpenAlex profile lists another institution.
-- The results table now shows Q, H-index, and R, with sortable columns.
+- The results table now shows Q, R, and H-index. Q/R drive the default ranking; H-index is profile context only.
 - Q now means normalized query relevance. R means citations received by matched papers during the selected citation year range.
 - The citation year range is debounced, so dragging the range does not continuously trigger OpenAlex requests.
 - UI readability and layout were improved, including light mode contrast and screen-size scaling in Settings.
@@ -66,8 +66,8 @@ The app now exposes:
 - R_raw: citations received during the selected citation year range
 - R_norm: log-normalized recent citation impact
 - Final score: `wQ * Q_norm + wR * R_norm`
-- H-index
-- Lifetime citations
+- H-index as profile-only context
+- Lifetime citations as profile-only context
 - Result match source, such as exact name, author search, topic relevance, or institution search
 
 The goal is to make it easier to understand why someone appears in a result list.
@@ -105,6 +105,8 @@ Final Score = wQ * Q_norm + wR * R_norm
 ```
 
 The sliders also allow query-only ranking (`wQ = 1, wR = 0`) and citation-impact-only ranking (`wQ = 0, wR = 1`).
+
+H-index is deliberately not part of the default ranking score. It remains visible in the table and profile detail page so reviewers can inspect researcher seniority or bibliometric context without mixing it into the Q/R score.
 
 ## Local Run Instructions
 

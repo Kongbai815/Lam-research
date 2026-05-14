@@ -258,9 +258,9 @@ function metricDescription(label: string) {
   const normalized = label.toLowerCase();
   if (normalized.includes("query relevance") || normalized.includes("q relevance") || normalized === "q" || normalized.includes("q_norm")) return "Q_norm: query relevance normalized within the visible result set. Higher means this author matched the search intent more strongly.";
   if (normalized.includes("research impact") || normalized.includes("r impact") || normalized === "r" || normalized.includes("r_norm") || normalized.includes("recent citation")) return "R_raw is citations received by matched papers during the selected citation year range. R_norm uses log(1 + R_raw), then normalizes within the result set.";
-  if (normalized.includes("final")) return "Final Score = wQ * Q_norm + wR * R_norm. Slider values are converted into shares before calculation.";
-  if (normalized.includes("h-index") || normalized === "h") return "OpenAlex h-index. H=81 means the author has at least 81 works that each received at least 81 citations.";
-  if (normalized.includes("raw citation")) return "Total OpenAlex cited_by_count for the author profile. This favors older and high-citation fields, so it is not used alone.";
+  if (normalized.includes("final")) return "Final Score = wQ * Q_norm + wR * R_norm. H-index is shown as profile context only.";
+  if (normalized.includes("h-index") || normalized.includes("h profile") || normalized === "h") return "Profile-only OpenAlex h-index. H=81 means the author has at least 81 works that each received at least 81 citations; it is not used in the default Q/R ranking.";
+  if (normalized.includes("raw citation")) return "Total OpenAlex cited_by_count for the author profile. This favors older and high-citation fields, so it is shown as context rather than used directly.";
   if (normalized.includes("citation")) return "Citation signal from OpenAlex counts. The main ranking uses R for citation-window impact, not lifetime citations.";
   return "";
 }
@@ -282,7 +282,7 @@ function researcherContext(list: ResearcherRecord[]) {
   return list.slice(0, 12).map((researcher, index) => {
     const affiliation = affiliationDisplay(researcher);
     const current = affiliation.currentDiffers ? `; current institution: ${affiliation.current}` : "";
-    return `${index + 1}. ${researcher.name}; institution: ${affiliation.primary}${current}; topic: ${researcher.primaryTopic}; Q_norm: ${Math.round(researcher.queryRelevanceNorm || 0)}; R_raw citation-window citations: ${researcher.recentCitations || 0}; R_norm: ${Math.round(researcher.recentCitationImpactNorm || 0)}; final score: ${Math.round(researcher.finalScore || 0)}; H-index: ${researcher.hIndex}; lifetime citations: ${researcher.totalCitations}; works: ${researcher.totalWorks}`;
+    return `${index + 1}. ${researcher.name}; institution: ${affiliation.primary}${current}; topic: ${researcher.primaryTopic}; Q_norm: ${Math.round(researcher.queryRelevanceNorm || 0)}; R_raw citation-window citations: ${researcher.recentCitations || 0}; R_norm: ${Math.round(researcher.recentCitationImpactNorm || 0)}; final score: ${Math.round(researcher.finalScore || 0)}; profile-only H-index: ${researcher.hIndex}; lifetime citations: ${researcher.totalCitations}; works: ${researcher.totalWorks}`;
   }).join("\n");
 }
 
@@ -786,7 +786,7 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
     try {
       const answer = await requestAiAnswer(settings, nextMessages, [
         `Current search query: ${query}`,
-        researcher ? `Currently highlighted researcher: ${researcher.name}; institution: ${affiliationDisplay(researcher).primary}; topic: ${researcher.primaryTopic}; Q_norm: ${Math.round(researcher.queryRelevanceNorm || 0)}; R_raw citation-window citations: ${researcher.recentCitations || 0}; R_norm: ${Math.round(researcher.recentCitationImpactNorm || 0)}; H-index: ${researcher.hIndex}; lifetime citations: ${researcher.totalCitations}.` : "",
+        researcher ? `Currently highlighted researcher: ${researcher.name}; institution: ${affiliationDisplay(researcher).primary}; topic: ${researcher.primaryTopic}; Q_norm: ${Math.round(researcher.queryRelevanceNorm || 0)}; R_raw citation-window citations: ${researcher.recentCitations || 0}; R_norm: ${Math.round(researcher.recentCitationImpactNorm || 0)}; profile-only H-index: ${researcher.hIndex}; lifetime citations: ${researcher.totalCitations}.` : "",
         `Current page researchers:\n${researcherContext(list)}`,
       ].filter(Boolean).join("\n\n"));
       setMessages((prev) => [...prev, { role: "assistant", content: answer }]);
@@ -822,9 +822,7 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
 }
 
 const chartModeOptions: Array<{ value: ChartMode; label: string }> = [
-  { value: "q-r", label: "Q / R" },
-  { value: "q-h", label: "Q / H" },
-  { value: "r-h", label: "R / H" },
+  { value: "q-r", label: "Q / R trade-off" },
 ];
 
 function chartAxes(mode: ChartMode) {
@@ -894,7 +892,7 @@ function ParetoChart({ list, selected, rankMap, mode, onModeChange, onSelect }: 
   const yTicks = axisTicks(yDomain, axes.y);
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 gap-2">
         {chartModeOptions.map((option) => (
           <button key={option.value} onClick={() => onModeChange(option.value)} className={cn("rounded-md border px-2 py-1.5 text-[10px] font-semibold", mode === option.value ? "border-blue-500/60 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-500 hover:text-slate-200")}>{option.label}</button>
         ))}
@@ -992,7 +990,7 @@ function FilterRail({ filters, setFilters, countries, chartResearchers, selected
         <div className="space-y-3">
           <WeightSlider label="Query relevance" color="#22c55e" value={filters.weights.query} onChange={(value) => setFilters({ ...filters, weights: { ...filters.weights, query: value } })} />
           <WeightSlider label="Research impact" color="#fb923c" value={filters.weights.research} onChange={(value) => setFilters({ ...filters, weights: { ...filters.weights, research: value } })} />
-          <p className="text-[10px] leading-4 text-slate-500">Final Score = wQ * Q_norm + wR * R_norm. Defaults favor query relevance.</p>
+          <p className="text-[10px] leading-4 text-slate-500">Final Score = wQ * Q_norm + wR * R_norm. H-index is profile context, not part of the default score.</p>
           <div className="grid grid-cols-3 gap-1.5 pt-1">
             {[["Default", { query: 70, research: 30 }], ["Q only", { query: 100, research: 0 }], ["R only", { query: 0, research: 100 }]].map(([label, weights]) => <button key={label as string} className="rounded border border-white/8 bg-white/[0.03] py-1 text-[10px] text-slate-400 hover:text-slate-100" onClick={() => setFilters({ ...filters, weights: weights as Record<WeightKey, number> })}>{label as string}</button>)}
           </div>
@@ -1048,7 +1046,7 @@ function ResearcherTable({
             <th className="w-[30%] border-b border-white/8 px-3 py-3">Researcher</th>
             <th className="w-[27%] border-b border-white/8 px-3 py-3">Institution</th>
             <th className="border-b border-white/8 px-3 py-3">{metricHeader("query", "Q", "Normalized query relevance within the visible result set.")}</th>
-            <th className="border-b border-white/8 px-3 py-3">{metricHeader("hIndex", "H", "OpenAlex h-index: at least H works each cited at least H times.")}</th>
+            <th className="border-b border-white/8 px-3 py-3">{metricHeader("hIndex", "H", "Profile-only OpenAlex h-index. It is not used in the default Q/R ranking.")}</th>
             <th className="border-b border-white/8 px-3 py-3">{metricHeader("recentCitations", "R", "Citations received by matched papers during the selected citation year range.")}</th>
             <th className="border-b border-white/8 px-3 py-3">Actions</th>
           </tr>
@@ -1207,7 +1205,7 @@ function RankingBreakdown({ researcher, weights, compact = false }: { researcher
         <span className="font-mono text-sm font-extrabold text-blue-300">{Math.round(finalScore)}</span>
       </div>
       <p className="mt-2 text-[11px] leading-5 text-slate-500">
-        Final Score = wQ * Q_norm + wR * R_norm. R_raw = {formatNumber(researcher.recentCitations || 0)} citations received during {researcher.citationStartYear || "n/a"}-{researcher.citationEndYear || "n/a"}.
+        Final Score = wQ * Q_norm + wR * R_norm. R_raw = {formatNumber(researcher.recentCitations || 0)} citations received during {researcher.citationStartYear || "n/a"}-{researcher.citationEndYear || "n/a"}. H-index is shown separately and does not affect this score.
       </p>
       <div className="mt-3 space-y-2.5">
         {items.map((item) => (
@@ -1249,9 +1247,9 @@ function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, qu
       {researcher ? (
         <>
           <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4"><div className="flex items-start gap-3"><div className="flex h-14 w-14 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-lg font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div><div className="min-w-0"><h2 className="font-bold text-slate-100">{researcher.name}</h2><AffiliationSummary researcher={researcher} className="text-xs text-slate-500" /><p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-blue-300">{affiliationDisplay(researcher).country} - since {researcher.careerStartYear || "n/a"}</p><span title={researcher.matchReason || researcher.whyMatched} className="mt-2 inline-flex max-w-full rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span></div></div><button onClick={onToggleSave} className={cn("mt-4 w-full rounded-md border border-white/8 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved Researcher" : "Save Researcher"}</button></div>
-          <div className="mt-4 grid grid-cols-3 gap-2.5">{[["Q relevance", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R impact", formatNumber(researcher.recentCitations || 0), "text-orange-300"], ["H-index", researcher.hIndex, "text-sky-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><div className={cn("font-mono text-xl font-extrabold", color as string)}>{value}</div><div className="text-[11px] text-slate-400">{label}</div></div>)}</div>
+          <div className="mt-4 grid grid-cols-3 gap-2.5">{[["Q relevance", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R impact", formatNumber(researcher.recentCitations || 0), "text-orange-300"], ["H profile", researcher.hIndex, "text-sky-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><div className={cn("font-mono text-xl font-extrabold", color as string)}>{value}</div><div className="text-[11px] text-slate-400">{label}</div></div>)}</div>
           <div className="mt-4"><RankingBreakdown researcher={researcher} weights={weights} compact /></div>
-          <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-200"><Sparkles className="h-3.5 w-3.5 text-blue-400" />AI Research Summary</h3><p className="text-xs leading-relaxed text-slate-400">{researcher.name} is linked to {affiliationDisplay(researcher).primary} and specializes in {researcher.primaryTopic}. Their matched papers received {formatNumber(researcher.recentCitations || 0)} citations in the selected citation year range; lifetime OpenAlex citations are {formatNumber(researcher.totalCitations)}.</p></div>
+          <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-200"><Sparkles className="h-3.5 w-3.5 text-blue-400" />AI Explanation</h3><p className="text-xs leading-relaxed text-slate-400">{researcher.name} is linked to {affiliationDisplay(researcher).primary} and specializes in {researcher.primaryTopic}. Their matched papers received {formatNumber(researcher.recentCitations || 0)} citations in the selected citation year range. This explanation is separate from the Q/R score.</p></div>
           <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2.5">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 5).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3.5 py-1.5 text-xs font-semibold text-blue-100">{topic}</span>)}</div><button onClick={onOpenDetail} className="mt-4 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Open detailed profile</button></div>
         </>
       ) : (
@@ -1272,7 +1270,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
   const headlineMetrics = [
     { label: "Q relevance", value: Math.round(researcher.queryRelevanceNorm || 0), caption: "Normalized query fit", color: "text-emerald-400", description: metricDescription("Query relevance") },
     { label: "R impact", value: formatNumber(researcher.recentCitations || 0), caption: `${researcher.citationStartYear || ""}-${researcher.citationEndYear || ""}`, color: "text-orange-400", description: metricDescription("Research impact") },
-    { label: "H-Index", value: researcher.hIndex, caption: "OpenAlex lifetime", color: "text-blue-400", description: metricDescription("H-index") },
+    { label: "H profile", value: researcher.hIndex, caption: "OpenAlex context", color: "text-blue-400", description: metricDescription("H profile") },
     { label: "Lifetime cites", value: formatNumber(researcher.totalCitations), caption: "OpenAlex total", color: "text-cyan-400", description: metricDescription("Raw citations") },
   ];
   return (
@@ -1291,7 +1289,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
           ))}
         </section>
         <section className="mt-6"><RankingBreakdown researcher={researcher} weights={weights} /></section>
-        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />AI Research Summary</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime OpenAlex records still show {formatNumber(researcher.totalCitations)} citations, {researcher.totalWorks} works, and an H-index of {researcher.hIndex}. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
+        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />AI Explanation</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">OpenAlex does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6">
           <h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Source Data & Reliability</h2>
@@ -1301,7 +1299,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Citation coverage</div><div className="mt-2 text-2xl font-bold text-slate-100">{Math.round(citationCoverage * 100)}%</div><div className="mt-1 text-[11px] text-slate-500">{formatNumber(paperCitationSample)} citations visible in indexed papers</div></div>
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Collaborators shown</div><div className="mt-2 text-2xl font-bold text-slate-100">{researcher.collaborators.length}</div><div className="mt-1 text-[11px] text-slate-500">{researcher.coAuthorCount ? `${researcher.coAuthorCount} total co-authors reported` : "Only highlighted collaborators available"}</div></div>
           </div>
-          <p className="mt-4 text-xs leading-6 text-slate-500">Use the expanders below to inspect the OpenAlex-derived fields. If paper coverage is low, ranking metrics lean more on the profile-level citation record than on paper-by-paper evidence.</p>
+          <p className="mt-4 text-xs leading-6 text-slate-500">Use the expanders below to inspect the OpenAlex-derived fields. Ranking uses Q/R; lifetime citations and H-index are profile context only.</p>
           <div className="mt-4 space-y-3">
             <details className="rounded-lg border border-white/8 bg-black/10">
               <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Profile record fields</summary>
