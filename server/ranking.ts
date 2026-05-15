@@ -4,6 +4,8 @@ type JsonResponse = {
 };
 
 const DEFAULT_RANKING_TIMEOUT_MS = 30000;
+const DEFAULT_Q_WEIGHT = 0.7;
+const DEFAULT_R_WEIGHT = 0.3;
 
 function jsonResponse(res: JsonResponse, status: number, payload: unknown) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -48,6 +50,27 @@ async function readJson(response: Response) {
   }
 }
 
+function numericWeight(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function normalizeWeightPair(request: Record<string, unknown>) {
+  const qRaw = numericWeight(request.q_weight ?? request.wQ ?? request.queryWeight ?? request.query_weight) ?? DEFAULT_Q_WEIGHT;
+  const rRaw = numericWeight(request.r_weight ?? request.wR ?? request.researchWeight ?? request.research_weight) ?? DEFAULT_R_WEIGHT;
+  if (qRaw < 0 || rRaw < 0) throw new Error("Ranking weights must be non-negative.");
+  const total = qRaw + rRaw;
+  if (total <= 0) throw new Error("At least one ranking weight must be greater than zero.");
+  return {
+    q_weight: qRaw / total,
+    r_weight: rRaw / total,
+  };
+}
+
 function normalizeRankRequest(body: unknown) {
   const request = body && typeof body === "object" ? { ...(body as Record<string, unknown>) } : {};
   if (typeof request.query !== "string" || !request.query.trim()) {
@@ -56,12 +79,21 @@ function normalizeRankRequest(body: unknown) {
   request.query = request.query.trim();
   if (!("use_simple_ranking" in request)) request.use_simple_ranking = true;
   if (!("limit" in request)) request.limit = 30;
+  const weights = normalizeWeightPair(request);
+  request.q_weight = weights.q_weight;
+  request.r_weight = weights.r_weight;
+  delete request.wQ;
+  delete request.wR;
+  delete request.queryWeight;
+  delete request.query_weight;
+  delete request.researchWeight;
+  delete request.research_weight;
   return request;
 }
 
 function rankingProxyErrorStatus(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("non-empty query")) return 400;
+  if (message.includes("non-empty query") || message.toLowerCase().includes("ranking weight")) return 400;
   return 503;
 }
 

@@ -90,6 +90,15 @@ RANKING_API_AUTH_TOKEN=
 
 The browser should call the Express routes above. It should not call the Cloud Run URL directly. Backend-only secrets for the FastAPI service, such as MySQL credentials or Pinecone keys, should stay in that service's own cloud environment and should not be copied into this app.
 
+The proxy explicitly sends Q/R weights to the ranking backend. If the browser request omits weights, the proxy uses the product default:
+
+```text
+q_weight = 0.7
+r_weight = 0.3
+```
+
+It also accepts slider-style aliases such as `wQ`/`wR` or percentage-style values such as `70`/`30`, then normalizes them before forwarding the request.
+
 ### 5. Citation year range
 
 The year selector now means citation year range, not publication year range.
