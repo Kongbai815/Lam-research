@@ -315,8 +315,14 @@ function looksLikePersonQuery(query: string) {
 function looksLikeInstitutionQuery(query: string) {
   const trimmed = query.trim();
   const normalized = normalizedSearchText(trimmed);
-  const institutionWords = /\b(university|college|institute|school|hospital|laboratory|lab|center|centre|academy|polytechnic|department)\b/i;
-  if (institutionWords.test(trimmed)) return true;
+  const tokens = normalizedQueryTokens(query);
+  const strongInstitutionWords = /\b(university|college|hospital)\b/i;
+  const secondaryInstitutionWords = /\b(institute|school|laboratory|lab|center|centre|academy|polytechnic|department)\b/i;
+  if (strongInstitutionWords.test(trimmed)) return true;
+  if (secondaryInstitutionWords.test(trimmed)) {
+    const topicWordCount = tokens.filter((token) => TOPIC_WORDS.has(token)).length;
+    if (tokens.length <= 5 && topicWordCount === 0) return true;
+  }
   if (/^[A-Z][A-Z0-9&.-]{1,9}$/.test(trimmed) && !/^(AI|ML|NLP|LLM|CPU|GPU)$/i.test(trimmed)) return true;
   return ["mit", "caltech", "eth", "cmu", "ucl", "epfl", "nus", "ntu"].includes(normalized);
 }
@@ -360,7 +366,7 @@ function narrowInstitutionMatches(institutions: OpenAlexInstitution[], query: st
 function sourceLabel(mode: SearchMode) {
   if (mode === "author") return "Author search";
   if (mode === "institution") return "Institution search";
-  return "Works/topic search";
+  return "Query search";
 }
 
 async function fetchAuthorsBySearch(query: string, force = false) {
@@ -478,7 +484,8 @@ function toResearcherRecord(aggregated: AggregatedAuthor, author: OpenAlexAuthor
     .slice(0, 8)
     .map(([name, sharedPapers]) => ({ name, sharedPapers, type: "OpenAlex coauthor" }));
   const recencyScore = years.length ? Math.max(0, 100 - Math.max(0, CURRENT_YEAR - Math.max(...years)) * 8) : 0;
-  const qScore = Math.round(Math.min(100, Math.max(0, aggregated.queryRelevance || aggregated.relevance)));
+  const queryRelevanceScore = aggregated.searchMode === "institution" ? 100 : Math.round(Math.min(100, Math.max(0, aggregated.queryRelevance || aggregated.relevance)));
+  const qScore = queryRelevanceScore;
   const seniorityScore = Math.min(100, Math.max(0, CURRENT_YEAR - careerStartYear) * 3);
 
   return {
@@ -524,7 +531,7 @@ function toResearcherRecord(aggregated: AggregatedAuthor, author: OpenAlexAuthor
     avatar: "",
     keywords: topic.topics?.length ? topic.topics : [topic.topic].filter(Boolean),
     relevanceScore: Math.round(aggregated.relevance),
-    queryRelevanceScore: Math.round(aggregated.queryRelevance || aggregated.relevance),
+    queryRelevanceScore,
     whyMatched: aggregated.matchReason,
     matchSource: aggregated.matchSource,
     matchReason: aggregated.matchReason,
@@ -693,7 +700,7 @@ function mergeResearcherRecords(target: ResearcherRecord, source: ResearcherReco
     affiliation: institution,
     publications: totalWorks,
     relevanceScore: (target.relevanceScore || 0) + (source.relevanceScore || 0),
-    queryRelevanceScore: (target.queryRelevanceScore || 0) + (source.queryRelevanceScore || 0),
+    queryRelevanceScore: Math.max(target.queryRelevanceScore || 0, source.queryRelevanceScore || 0),
     matchSource: bestMatchSource(target.matchSource, source.matchSource),
   } satisfies ResearcherRecord;
 }

@@ -62,7 +62,7 @@ const DEFAULT_QUERY = "quantum computing algorithms";
 const PAGE_SIZE = 30;
 const TOPIC_FALLBACK = ["Quantum computing algorithms", "AI in healthcare", "Post-quantum cryptography", "Vision-language models", "Smart agriculture AI"];
 const searchModeOptions: Array<{ value: SearchModeChoice; label: string; placeholder: string }> = [
-  { value: "auto", label: "Auto", placeholder: "Search researchers, topics, institutions..." },
+  { value: "auto", label: "Default", placeholder: "Search researchers, topics, institutions..." },
   { value: "author", label: "Name", placeholder: "Search by researcher name..." },
   { value: "topic", label: "Query", placeholder: "Search by topic or keywords..." },
   { value: "institution", label: "Institution", placeholder: "Search by institution..." },
@@ -214,7 +214,7 @@ function matchSourceLabel(source?: ResearcherRecord["matchSource"]) {
   if (source === "author-search") return "Author search";
   if (source === "institution-search") return "Institution search";
   if (source === "works-search") return "Works search";
-  if (source === "topic-relevance") return "Topic relevance";
+  if (source === "topic-relevance") return "Query relevance";
   return "OpenAlex match";
 }
 
@@ -772,16 +772,18 @@ function ChatFloatingButton({ query, settings }: { query: string; settings: AppS
 }
 
 function ResultsAiPanel({ list, query, settings, researcher }: { list: ResearcherRecord[]; query: string; settings: AppSettings; researcher?: ResearcherRecord }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [customPrompt, setCustomPrompt] = useState("Create a concise research brief in the context of the current query. Compare breadth, depth, query fit, and recent citation-window impact. Recommend a short list for closer review. Do not mention LAM, funding, business intent, or any private organization.");
+  const [promptOpen, setPromptOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const ask = async () => {
-    const text = draft.trim();
+  const ask = async (override?: string) => {
+    const text = (override ?? draft).trim();
     if (!text || loading) return;
     const nextMessages = [...messages, { role: "user" as const, content: text }];
     setMessages(nextMessages);
-    setDraft("");
+    if (!override) setDraft("");
     setLoading(true);
     try {
       const answer = await requestAiAnswer(settings, nextMessages, [
@@ -805,18 +807,80 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
       {open && (
         <div className="border-t border-white/8">
           <div className="px-4 py-3 text-[11px] leading-5 text-slate-500">Ask for shortlist logic, compare visible researchers, or check whether the highlighted profile looks well-supported by OpenAlex.</div>
-          <div className="flex min-h-[400px] flex-col">
+          <div className="border-t border-white/8 px-4 py-3">
+            <button onClick={() => setPromptOpen((value) => !value)} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-300 hover:text-cyan-200">Custom prompt</button>
+            {promptOpen && (
+              <div className="mt-2 space-y-2">
+                <textarea value={customPrompt} onChange={(event) => setCustomPrompt(event.target.value)} className="h-24 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs leading-5 text-slate-300 outline-none placeholder:text-slate-600" />
+                <button disabled={loading} onClick={() => ask(customPrompt)} className="rounded-md border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50">Run prompt on current results</button>
+              </div>
+            )}
+          </div>
+          <div className="flex min-h-[280px] flex-col">
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 text-sm">
-            {messages.length === 0 ? <p className="text-slate-500">Try: “Which three people here are strongest for near-term collaboration?” or “Does this selected profile look data-complete?”</p> : messages.map((message, index) => <div key={index} className={cn("max-w-[88%] rounded-lg px-3 py-2 leading-6", message.role === "user" ? "ml-auto bg-emerald-600 text-white" : "bg-black/20 text-slate-300")}>{message.content}</div>)}
+            {messages.length === 0 ? <p className="text-slate-500">Try: "Which three people here are strongest for this query?" or "Does this selected profile look data-complete?"</p> : messages.map((message, index) => <div key={index} className={cn("max-w-[88%] rounded-lg px-3 py-2 leading-6", message.role === "user" ? "ml-auto bg-emerald-600 text-white" : "bg-black/20 text-slate-300")}>{message.content}</div>)}
             {loading && <div className="max-w-[88%] rounded-lg bg-black/20 px-3 py-2 leading-6 text-slate-300">Thinking...</div>}
           </div>
           <div className="flex items-center gap-2 border-t border-white/8 p-4">
             <input value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => event.key === "Enter" && ask()} className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none placeholder:text-slate-600" placeholder="Ask AI about these results..." />
-            <button disabled={loading} onClick={ask} className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50">Send</button>
+            <button disabled={loading} onClick={() => ask()} className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50">Send</button>
           </div>
         </div>
         </div>
       )}
+    </section>
+  );
+}
+
+function uniqueShortlist(items: Array<{ researcher?: ResearcherRecord; label: string; reason: string }>) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item.researcher || seen.has(item.researcher.id)) return false;
+    seen.add(item.researcher.id);
+    return true;
+  }).slice(0, 3) as Array<{ researcher: ResearcherRecord; label: string; reason: string }>;
+}
+
+function AutoAnalysisPanel({ list, query, loading, searchMode }: { list: ResearcherRecord[]; query: string; loading: boolean; searchMode?: OpenAlexMeta["searchMode"] }) {
+  if (loading) {
+    return <section className="border-b border-white/8 bg-[#070a10] px-4 py-3 text-xs text-slate-500">Preparing automatic research brief...</section>;
+  }
+  if (list.length === 0) return null;
+  const top = list[0];
+  const sortedByQuery = [...list].sort((a, b) => (b.queryRelevanceNorm || 0) - (a.queryRelevanceNorm || 0));
+  const sortedByImpact = [...list].sort((a, b) => (b.recentCitationImpactNorm || 0) - (a.recentCitationImpactNorm || 0));
+  const bestQuery = sortedByQuery[0];
+  const bestImpact = sortedByImpact.find((researcher) => researcher.id !== bestQuery?.id) || sortedByImpact[0];
+  const focused =
+    list.find((researcher) => researcher.id !== bestQuery?.id && researcher.id !== bestImpact?.id && (researcher.queryRelevanceNorm || 0) >= 60) ||
+    list.find((researcher) => researcher.id !== bestQuery?.id && researcher.id !== bestImpact?.id) ||
+    list[2];
+  const shortlist = uniqueShortlist([
+    { researcher: bestQuery, label: "Best query fit", reason: `Q ${Math.round(bestQuery?.queryRelevanceNorm || 0)} with ${formatNumber(bestQuery?.totalWorks || 0)} OpenAlex works.` },
+    { researcher: bestImpact, label: "Recent impact standout", reason: `${formatNumber(bestImpact?.recentCitations || 0)} R citations in the selected window.` },
+    { researcher: focused, label: "Specialized candidate", reason: `${focused?.primaryTopic || "Topic"}; active since ${focused?.careerStartYear || "n/a"}.` },
+  ]);
+  const modeCopy = searchMode === "institution" ? "This is a strong institution-filter search, so Q mostly reflects whether the researcher matched the searched institution." : searchMode === "author" ? "This is a strong author-name search, so exact and near-exact name matches are prioritized." : "This is a query search, so Q reflects topical fit and R reflects recent citation-window impact.";
+  return (
+    <section className="border-b border-white/8 bg-[#070a10] px-4 py-3">
+      <div className="rounded-lg border border-cyan-400/15 bg-cyan-400/[0.045] p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-cyan-100"><Sparkles className="h-3.5 w-3.5 text-cyan-300" />AI Analysis</h2>
+          <span className="text-[10px] text-slate-500">Auto-generated from visible Q/R signals</span>
+        </div>
+        <p className="text-xs leading-5 text-slate-400">
+          For "{query}", {top.name} currently ranks highest overall. {modeCopy} Use the shortlist below as a starting point for closer review, not as a final judgment.
+        </p>
+        <div className="mt-3 grid gap-2 lg:grid-cols-3">
+          {shortlist.map((item) => (
+            <div key={item.researcher.id} className="rounded-md border border-white/8 bg-black/10 px-3 py-2">
+              <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-cyan-200">{item.label}</div>
+              <div className="mt-1 truncate text-sm font-semibold text-slate-100">{item.researcher.name}</div>
+              <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-500">{item.reason}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </section>
   );
 }
@@ -1046,13 +1110,12 @@ function ResearcherTable({
             <th className="w-[30%] border-b border-white/8 px-3 py-3">Researcher</th>
             <th className="w-[27%] border-b border-white/8 px-3 py-3">Institution</th>
             <th className="border-b border-white/8 px-3 py-3">{metricHeader("query", "Q", "Normalized query relevance within the visible result set.")}</th>
-            <th className="border-b border-white/8 px-3 py-3">{metricHeader("hIndex", "H", "Profile-only OpenAlex h-index. It is not used in the default Q/R ranking.")}</th>
             <th className="border-b border-white/8 px-3 py-3">{metricHeader("recentCitations", "R", "Citations received by matched papers during the selected citation year range.")}</th>
             <th className="border-b border-white/8 px-3 py-3">Actions</th>
           </tr>
         </thead>
         <tbody>{list.length === 0 ? (
-          <tr><td colSpan={7} className="px-6 py-16 text-center text-sm text-slate-500">{emptyState}</td></tr>
+          <tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-slate-500">{emptyState}</td></tr>
         ) : list.map((researcher, index) => {
           const rank = startRank + index;
           const affiliation = affiliationDisplay(researcher);
@@ -1080,7 +1143,6 @@ function ResearcherTable({
                 <div className="text-xs font-normal text-slate-500">{affiliation.country}</div>
               </td>
               <td className="px-3 py-3.5 font-mono text-base font-extrabold text-emerald-300">{Math.round(researcher.queryRelevanceNorm || 0)}</td>
-              <td className="px-3 py-3.5 font-mono text-base font-extrabold text-sky-300">{researcher.hIndex}</td>
               <td className="px-3 py-3.5 font-mono text-base font-extrabold text-orange-300">{formatNumber(researcher.recentCitations || 0)}</td>
               <td className="px-3 py-3.5"><div className="flex items-center gap-1.5 text-slate-400"><button title={savedIds.has(researcher.id) ? "Saved" : "Save researcher"} onClick={(event) => { event.stopPropagation(); onToggleSave(researcher.id); }} className={cn("rounded p-1.5 hover:bg-white/8 hover:text-slate-100", savedIds.has(researcher.id) && "text-cyan-300")}>{savedIds.has(researcher.id) ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}</button><a title="Search on Google" href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="rounded p-1.5 hover:bg-white/8 hover:text-slate-100"><ExternalLink className="h-4 w-4" /></a></div></td>
             </tr>
@@ -1243,14 +1305,11 @@ function RankingBreakdown({ researcher, weights, compact = false }: { researcher
 
 function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, query, settings, weights }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; list: ResearcherRecord[]; query: string; settings: AppSettings; weights: Record<WeightKey, number> }) {
   return (
-    <aside className="w-[var(--side-summary-width)] shrink-0 overflow-y-auto border-l border-white/8 bg-[#070a10] p-5">
+    <aside className="w-[var(--side-summary-width)] shrink-0 overflow-y-auto border-l border-white/8 bg-[#070a10] p-4">
       {researcher ? (
         <>
-          <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4"><div className="flex items-start gap-3"><div className="flex h-14 w-14 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-lg font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div><div className="min-w-0"><h2 className="font-bold text-slate-100">{researcher.name}</h2><AffiliationSummary researcher={researcher} className="text-xs text-slate-500" /><p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-blue-300">{affiliationDisplay(researcher).country} - since {researcher.careerStartYear || "n/a"}</p><span title={researcher.matchReason || researcher.whyMatched} className="mt-2 inline-flex max-w-full rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span></div></div><button onClick={onToggleSave} className={cn("mt-4 w-full rounded-md border border-white/8 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved Researcher" : "Save Researcher"}</button></div>
-          <div className="mt-4 grid grid-cols-3 gap-2.5">{[["Q relevance", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R impact", formatNumber(researcher.recentCitations || 0), "text-orange-300"], ["H profile", researcher.hIndex, "text-sky-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><div className={cn("font-mono text-xl font-extrabold", color as string)}>{value}</div><div className="text-[11px] text-slate-400">{label}</div></div>)}</div>
-          <div className="mt-4"><RankingBreakdown researcher={researcher} weights={weights} compact /></div>
-          <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-200"><Sparkles className="h-3.5 w-3.5 text-blue-400" />AI Explanation</h3><p className="text-xs leading-relaxed text-slate-400">{researcher.name} is linked to {affiliationDisplay(researcher).primary} and specializes in {researcher.primaryTopic}. Their matched papers received {formatNumber(researcher.recentCitations || 0)} citations in the selected citation year range. This explanation is separate from the Q/R score.</p></div>
-          <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.025] p-4"><h3 className="mb-3 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2.5">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 5).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3.5 py-1.5 text-xs font-semibold text-blue-100">{topic}</span>)}</div><button onClick={onOpenDetail} className="mt-4 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Open detailed profile</button></div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><div className="flex items-start gap-3"><div className="flex h-12 w-12 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-base font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div><div className="min-w-0"><h2 className="truncate font-bold text-slate-100">{researcher.name}</h2><AffiliationSummary researcher={researcher} className="text-xs text-slate-500" /><p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-blue-300">{affiliationDisplay(researcher).country} - since {researcher.careerStartYear || "n/a"}</p><span title={researcher.matchReason || researcher.whyMatched} className="mt-2 inline-flex max-w-full rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span></div></div><div className="mt-3 grid grid-cols-2 gap-2">{[["Q", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R", formatNumber(researcher.recentCitations || 0), "text-orange-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-md border border-white/8 bg-black/10 p-2"><div className={cn("font-mono text-lg font-extrabold", color as string)}>{value}</div><div className="text-[10px] text-slate-500">{label}</div></div>)}</div><div className="mt-3 flex gap-2"><button onClick={onToggleSave} className={cn("min-w-0 flex-1 rounded-md border border-white/8 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved" : "Save"}</button><button onClick={onOpenDetail} className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Details</button></div></div>
+          <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 4).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-2.5 py-1 text-[11px] font-semibold text-blue-100">{topic}</span>)}</div></div>
         </>
       ) : (
         <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4 text-sm text-slate-500">Select a researcher to inspect profile metrics, reliability hints, and raw OpenAlex fields.</div>
@@ -1460,9 +1519,9 @@ export default function Home() {
   const uiScale = interfaceScale / 100;
   const appScaleStyle = {
     "--ui-scale": String(uiScale),
-    "--filter-rail-width": `${Math.round(Math.min(420, Math.max(260, 330 * uiScale)))}px`,
-    "--side-summary-width": `${Math.round(Math.min(520, Math.max(320, 400 * uiScale)))}px`,
-    "--researcher-table-min-width": `${Math.round(Math.min(1220, Math.max(760, 980 * uiScale)))}px`,
+    "--filter-rail-width": `${Math.round(Math.min(320, Math.max(220, 260 * uiScale)))}px`,
+    "--side-summary-width": `${Math.round(Math.min(300, Math.max(240, 280 * uiScale)))}px`,
+    "--researcher-table-min-width": `${Math.round(Math.min(820, Math.max(600, 660 * uiScale)))}px`,
     "--floating-chat-width": `${Math.round(560 * uiScale)}px`,
     "--floating-chat-height": `${Math.round(640 * uiScale)}px`,
     fontSize: `${interfaceScale}%`,
@@ -1483,6 +1542,7 @@ export default function Home() {
               <span>{searchLoading ? "Searching OpenAlex..." : `${resultList.length} researchers`}</span>
             </div>
           </div>
+          <AutoAnalysisPanel list={resultList.slice(0, 30)} query={activeQuery} loading={searchLoading} searchMode={openAlexMeta?.searchMode} />
           <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} />
           <PaginationBar page={currentPage} total={resultList.length} onPageChange={setPage} />
         </section>
