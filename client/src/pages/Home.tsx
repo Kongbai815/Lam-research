@@ -495,15 +495,21 @@ function mapRankingResponse(response: RankingApiResponse, query: string, searchM
 }
 
 function shouldUseRankingBackend(searchMode: SearchModeChoice) {
-  return searchMode === "auto" || searchMode === "topic";
+  return ["auto", "topic", "author", "institution"].includes(searchMode);
 }
 
 async function fetchRankingResearchers(query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number, weights: Record<WeightKey, number>, signal: AbortSignal) {
+  const searchFields =
+    searchMode === "author" ? { search_type: "author", author_query: query } :
+    searchMode === "institution" ? { search_type: "institution", institution_query: query } :
+    searchMode === "topic" ? { search_type: "topic", topic_query: query } :
+    { search_type: "default" };
   const response = await apiRequest<RankingApiResponse>("/api/ranking/rank", {
     method: "POST",
     signal,
     body: JSON.stringify({
       query,
+      ...searchFields,
       limit: 80,
       top_k: 80,
       use_simple_ranking: true,
@@ -746,8 +752,8 @@ function SettingsModal({ open, settings, onClose, onChange }: { open: boolean; s
           </section>
           <section className="rounded-lg border border-white/8 bg-white/[0.025] p-4">
             <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-300">Data & Privacy</h3>
-            <div className="rounded-md border border-white/8 px-3 py-3 text-sm text-slate-300">OpenAlex live data via server proxy</div>
-            <p className="mt-3 text-xs leading-5 text-slate-500">Search results are fetched from OpenAlex on demand. Set OPENALEX_API_KEY on the server to use your free OpenAlex key without exposing it in the browser.</p>
+            <div className="rounded-md border border-white/8 px-3 py-3 text-sm text-slate-300">Ranking backend via same-app proxy</div>
+            <p className="mt-3 text-xs leading-5 text-slate-500">Default searches are fetched from the ranking backend. OpenAlex is kept only as a temporary fallback if the ranking service is unavailable.</p>
           </section>
         </div>
       </div>
@@ -1004,7 +1010,7 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
       </button>
       {open && (
         <div className="border-t border-white/8">
-          <div className="px-4 py-3 text-[11px] leading-5 text-slate-500">Ask for shortlist logic, compare visible researchers, or check whether the highlighted profile looks well-supported by OpenAlex.</div>
+          <div className="px-4 py-3 text-[11px] leading-5 text-slate-500">Ask for shortlist logic, compare visible researchers, or check whether the highlighted profile looks well-supported by the returned ranking data.</div>
           <div className="border-t border-white/8 px-4 py-3">
             <button onClick={() => setPromptOpen((value) => !value)} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-300 hover:text-cyan-200">Custom prompt</button>
             {promptOpen && (
@@ -1054,7 +1060,7 @@ function AutoAnalysisPanel({ list, query, loading, searchMode }: { list: Researc
     list.find((researcher) => researcher.id !== bestQuery?.id && researcher.id !== bestImpact?.id) ||
     list[2];
   const shortlist = uniqueShortlist([
-    { researcher: bestQuery, label: "Best query fit", reason: `Q ${Math.round(bestQuery?.queryRelevanceNorm || 0)} with ${formatNumber(bestQuery?.totalWorks || 0)} OpenAlex works.` },
+    { researcher: bestQuery, label: "Best query fit", reason: `Q ${Math.round(bestQuery?.queryRelevanceNorm || 0)} with ${formatNumber(bestQuery?.totalWorks || 0)} matched works.` },
     { researcher: bestImpact, label: "Recent impact standout", reason: `${formatNumber(bestImpact?.recentCitations || 0)} R citations in the selected window.` },
     { researcher: focused, label: "Specialized candidate", reason: `${focused?.primaryTopic || "Topic"}; active since ${focused?.careerStartYear || "n/a"}.` },
   ]);
@@ -1221,7 +1227,7 @@ function LandingPage({ query, setQuery, onSearch, history, searchMode, setSearch
         {topics.map((topic) => <button key={topic} className="rounded-full border border-white/8 px-3 py-1 hover:border-blue-500/50 hover:text-slate-200" onClick={() => { setSearchMode("topic"); setQuery(topic.toLowerCase()); onSearch(topic.toLowerCase()); }}>{topic}</button>)}
       </div>
       <ChatFloatingButton query={query} settings={settings} />
-      <footer className="absolute bottom-6 text-[11px] text-slate-600">ResearchAI - AI-powered academic search - OpenAlex live data</footer>
+      <footer className="absolute bottom-6 text-[11px] text-slate-600">ResearchAI - AI-powered academic search - ranking backend data</footer>
     </main>
   );
 }
@@ -1510,7 +1516,7 @@ function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, qu
           <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 4).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-2.5 py-1 text-[11px] font-semibold text-blue-100">{topic}</span>)}</div></div>
         </>
       ) : (
-        <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4 text-sm text-slate-500">Select a researcher to inspect profile metrics, reliability hints, and raw OpenAlex fields.</div>
+        <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4 text-sm text-slate-500">Select a researcher to inspect profile metrics, reliability hints, and returned backend fields.</div>
       )}
       <div className="mt-4">
         <ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} />
@@ -1556,7 +1562,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Citation coverage</div><div className="mt-2 text-2xl font-bold text-slate-100">{Math.round(citationCoverage * 100)}%</div><div className="mt-1 text-[11px] text-slate-500">{formatNumber(paperCitationSample)} citations visible in indexed papers</div></div>
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Collaborators shown</div><div className="mt-2 text-2xl font-bold text-slate-100">{researcher.collaborators.length}</div><div className="mt-1 text-[11px] text-slate-500">{researcher.coAuthorCount ? `${researcher.coAuthorCount} total co-authors reported` : "Only highlighted collaborators available"}</div></div>
           </div>
-          <p className="mt-4 text-xs leading-6 text-slate-500">Use the expanders below to inspect the OpenAlex-derived fields. Ranking uses Q/R; lifetime citations and H-index are profile context only.</p>
+          <p className="mt-4 text-xs leading-6 text-slate-500">Use the expanders below to inspect backend-returned profile fields. Ranking uses Q/R; lifetime citations and H-index are profile context only.</p>
           <div className="mt-4 space-y-3">
             <details className="rounded-lg border border-white/8 bg-black/10">
               <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Profile record fields</summary>
@@ -1567,9 +1573,9 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
               </div>
             </details>
             <details className="rounded-lg border border-white/8 bg-black/10">
-              <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Matched OpenAlex works ({researcher.papers.length})</summary>
+              <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Matched works ({researcher.papers.length})</summary>
               <div className="border-t border-white/8 p-4">
-                {researcher.papers.length === 0 ? <p className="text-sm text-slate-500">No matched OpenAlex works are present for this researcher.</p> : <div className="space-y-3">{researcher.papers.map((paper) => <div key={paper.id} className="rounded-lg border border-white/8 bg-[#05070b] p-3"><div className="flex items-start justify-between gap-4"><div><div className="text-sm font-semibold text-slate-100">{paper.title}</div><div className="mt-1 text-xs text-slate-500">{paper.year || "n/a"} · {paper.venue || "Unknown venue"} · {paper.concept || "No concept label"}</div><div className="mt-1 font-mono text-[10px] text-slate-600">{paper.id}</div></div><div className="text-right"><div className="font-mono text-sm font-bold text-orange-300">{formatNumber(paper.recentCitations || 0)}</div><div className="text-[10px] text-slate-500">R cites</div><a href={paperUrl(paper)} target="_blank" rel="noreferrer" className="mt-2 inline-flex text-xs text-blue-300 hover:text-blue-200">Open source<ExternalLink className="ml-1 h-3 w-3" /></a></div></div>{paper.abstract && <p className="mt-3 text-xs leading-6 text-slate-500">{paper.abstract}</p>}</div>)}</div>}
+                {researcher.papers.length === 0 ? <p className="text-sm text-slate-500">No matched works are present for this researcher.</p> : <div className="space-y-3">{researcher.papers.map((paper) => <div key={paper.id} className="rounded-lg border border-white/8 bg-[#05070b] p-3"><div className="flex items-start justify-between gap-4"><div><div className="text-sm font-semibold text-slate-100">{paper.title}</div><div className="mt-1 text-xs text-slate-500">{paper.year || "n/a"} · {paper.venue || "Unknown venue"} · {paper.concept || "No concept label"}</div><div className="mt-1 font-mono text-[10px] text-slate-600">{paper.id}</div></div><div className="text-right"><div className="font-mono text-sm font-bold text-orange-300">{formatNumber(paper.recentCitations || 0)}</div><div className="text-[10px] text-slate-500">R cites</div><a href={paperUrl(paper)} target="_blank" rel="noreferrer" className="mt-2 inline-flex text-xs text-blue-300 hover:text-blue-200">Open source<ExternalLink className="ml-1 h-3 w-3" /></a></div></div>{paper.abstract && <p className="mt-3 text-xs leading-6 text-slate-500">{paper.abstract}</p>}</div>)}</div>}
               </div>
             </details>
             <details className="rounded-lg border border-white/8 bg-black/10">
@@ -1579,14 +1585,14 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
               </div>
             </details>
             <details className="rounded-lg border border-white/8 bg-black/10">
-              <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Raw OpenAlex snapshot</summary>
+              <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-100">Raw profile snapshot</summary>
               <div className="border-t border-white/8 p-4">
                 <pre className="overflow-x-auto rounded-lg bg-[#05070b] p-4 text-[11px] leading-6 text-slate-300">{JSON.stringify(rawSnapshot, null, 2)}</pre>
               </div>
             </details>
           </div>
         </section>
-        <section className="mt-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><FileText className="h-4 w-4 text-slate-400" />Top Matched Papers</h2><div className="rounded-xl border border-white/8 bg-white/[0.025] p-4">{researcher.papers.length === 0 ? <div className="py-12 text-center text-sm text-slate-500"><p>No matched OpenAlex works for this researcher.</p><a className="mt-4 inline-flex rounded-md border border-blue-500/30 px-3 py-2 text-xs font-semibold text-blue-200 hover:bg-blue-500/10" href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer">Search on Google Scholar</a></div> : <div className="space-y-3">{researcher.papers.map((paper) => <article key={paper.id} className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="flex items-start justify-between gap-4"><div><a href={paperUrl(paper)} target="_blank" rel="noreferrer" className="text-sm font-semibold text-slate-100 hover:text-blue-300">{paper.title}<ExternalLink className="ml-1 inline h-3 w-3" /></a><p className="mt-1 text-xs text-slate-500">{paper.venue || "Unknown venue"} - {paper.year || "n/a"} - {paper.concept}</p><p className="mt-1 text-[10px] text-slate-600">{paper.id.startsWith("10.") ? `DOI: ${paper.id}` : paper.id}</p></div><div className="text-right"><div className="font-mono text-sm font-bold text-orange-400">{formatNumber(paper.recentCitations || 0)}</div><div className="text-[10px] text-slate-500">R cites</div><div className="mt-1 text-[10px] text-slate-600">{formatNumber(paper.citations)} lifetime</div></div></div>{paper.abstract && <p className="mt-3 line-clamp-3 text-xs leading-6 text-slate-500">{paper.abstract}</p>}</article>)}</div>}</div></section>
+        <section className="mt-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><FileText className="h-4 w-4 text-slate-400" />Top Matched Papers</h2><div className="rounded-xl border border-white/8 bg-white/[0.025] p-4">{researcher.papers.length === 0 ? <div className="py-12 text-center text-sm text-slate-500"><p>No matched works for this researcher.</p><a className="mt-4 inline-flex rounded-md border border-blue-500/30 px-3 py-2 text-xs font-semibold text-blue-200 hover:bg-blue-500/10" href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer">Search on Google Scholar</a></div> : <div className="space-y-3">{researcher.papers.map((paper) => <article key={paper.id} className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="flex items-start justify-between gap-4"><div><a href={paperUrl(paper)} target="_blank" rel="noreferrer" className="text-sm font-semibold text-slate-100 hover:text-blue-300">{paper.title}<ExternalLink className="ml-1 inline h-3 w-3" /></a><p className="mt-1 text-xs text-slate-500">{paper.venue || "Unknown venue"} - {paper.year || "n/a"} - {paper.concept}</p><p className="mt-1 text-[10px] text-slate-600">{paper.id.startsWith("10.") ? `DOI: ${paper.id}` : paper.id}</p></div><div className="text-right"><div className="font-mono text-sm font-bold text-orange-400">{formatNumber(paper.recentCitations || 0)}</div><div className="text-[10px] text-slate-500">R cites</div><div className="mt-1 text-[10px] text-slate-600">{formatNumber(paper.citations)} lifetime</div></div></div>{paper.abstract && <p className="mt-3 line-clamp-3 text-xs leading-6 text-slate-500">{paper.abstract}</p>}</article>)}</div>}</div></section>
       </div>
     </main>
   );
