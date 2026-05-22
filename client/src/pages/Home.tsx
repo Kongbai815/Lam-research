@@ -564,8 +564,7 @@ function AuthModal({ mode, onClose, onModeChange, onAuthenticated }: { mode?: Au
   const [loading, setLoading] = useState(false);
   if (!mode) return null;
   const title = mode === "login" ? "Log in" : "Create account";
-  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-  const googleAuthUrl = googleClientId ? `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(googleClientId)}&redirect_uri=${encodeURIComponent(window.location.origin)}&response_type=code&scope=${encodeURIComponent("openid email profile")}` : "";
+  const googleLoginEnabled = import.meta.env.VITE_GOOGLE_LOGIN_ENABLED === "true";
   const requestCode = async () => {
     setLoading(true);
     try {
@@ -598,10 +597,10 @@ function AuthModal({ mode, onClose, onModeChange, onAuthenticated }: { mode?: Au
           <button onClick={() => onModeChange("login")} className={cn("rounded px-3 py-2 text-sm", mode === "login" ? "bg-blue-600 text-white" : "text-slate-400")}>Log in</button>
           <button onClick={() => onModeChange("register")} className={cn("rounded px-3 py-2 text-sm", mode === "register" ? "bg-blue-600 text-white" : "text-slate-400")}>Register</button>
         </div>
-        {googleAuthUrl ? (
-          <a href={googleAuthUrl} className="mt-4 block w-full rounded-md border border-white/10 px-3 py-2.5 text-center text-sm font-semibold text-slate-200 hover:bg-white/[0.04]">Continue with Google</a>
+        {googleLoginEnabled ? (
+          <a href="/api/auth/google/start" className="mt-4 block w-full rounded-md border border-white/10 px-3 py-2.5 text-center text-sm font-semibold text-slate-200 hover:bg-white/[0.04]">Continue with Google</a>
         ) : (
-          <button type="button" onClick={() => setStatus("Google sign-in needs VITE_GOOGLE_CLIENT_ID and a backend callback before it can be used.")} className="mt-4 block w-full rounded-md border border-white/10 px-3 py-2.5 text-center text-sm font-semibold text-slate-400 hover:bg-white/[0.04]">Continue with Google</button>
+          <button type="button" onClick={() => setStatus("Google sign-in is wired in the backend, but needs Google OAuth credentials and VITE_GOOGLE_LOGIN_ENABLED=true before it is shown as live.")} className="mt-4 block w-full rounded-md border border-white/10 px-3 py-2.5 text-center text-sm font-semibold text-slate-400 hover:bg-white/[0.04]">Continue with Google</button>
         )}
         <div className="my-4 flex items-center gap-3 text-xs text-slate-600"><span className="h-px flex-1 bg-white/10" />or<span className="h-px flex-1 bg-white/10" /></div>
         <label className="text-xs text-slate-500"><Mail className="mr-1 inline h-3.5 w-3.5" /><Phone className="mr-1 inline h-3.5 w-3.5" />Email or phone</label>

@@ -6,7 +6,7 @@ import path from "node:path";
 import { defineConfig, type Plugin, type ViteDevServer } from "vite";
 import { vitePluginManusRuntime } from "vite-plugin-manus-runtime";
 import { handleAiChatRequest } from "./server/ai";
-import { handleGetSaved, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./server/auth";
+import { handleGetSaved, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./server/auth";
 import { handleOpenAlexResearchersRequest } from "./server/openalex";
 
 // =============================================================================
@@ -132,6 +132,8 @@ function vitePluginManusDebugCollector(): Plugin {
         if (req.method === "POST" && route === "/auth/request-code") return readBody((body) => handleRequestCode(body, res));
         if (req.method === "POST" && route === "/auth/register") return readBody((body) => handleRegister(body, res));
         if (req.method === "POST" && route === "/auth/login") return readBody((body) => handleLogin(body, res));
+        if (req.method === "GET" && route === "/auth/google/start") return handleGoogleStart(req, res);
+        if (req.method === "GET" && route === "/auth/google/callback") return handleGoogleCallback(req, res);
         if (req.method === "POST" && route === "/auth/logout") return handleLogout(req, res);
         if (req.method === "GET" && route === "/auth/me") return handleMe(req, res);
         if (req.method === "GET" && route === "/saved-researchers") return handleGetSaved(req, res);

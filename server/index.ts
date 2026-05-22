@@ -3,7 +3,7 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import { handleAiChatRequest } from "./ai";
-import { handleGetSaved, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./auth";
+import { handleGetSaved, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./auth";
 import { handleOpenAlexResearchersRequest } from "./openalex";
 import { handleRankingHealthRequest, handleRankingRankRequest } from "./ranking";
 
@@ -29,6 +29,14 @@ async function startServer() {
 
   app.post("/api/auth/login", (req, res) => {
     handleLogin(req.body, res);
+  });
+
+  app.get("/api/auth/google/start", (req, res) => {
+    handleGoogleStart(req, res);
+  });
+
+  app.get("/api/auth/google/callback", async (req, res) => {
+    await handleGoogleCallback(req, res);
   });
 
   app.post("/api/auth/logout", (req, res) => {
