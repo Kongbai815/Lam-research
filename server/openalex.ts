@@ -484,8 +484,9 @@ function toResearcherRecord(aggregated: AggregatedAuthor, author: OpenAlexAuthor
     .slice(0, 8)
     .map(([name, sharedPapers]) => ({ name, sharedPapers, type: "OpenAlex coauthor" }));
   const recencyScore = years.length ? Math.max(0, 100 - Math.max(0, CURRENT_YEAR - Math.max(...years)) * 8) : 0;
-  const queryRelevanceScore = aggregated.searchMode === "institution" ? 100 : Math.round(Math.min(100, Math.max(0, aggregated.queryRelevance || aggregated.relevance)));
-  const qScore = queryRelevanceScore;
+  const rawQueryRelevance = Math.max(0, aggregated.queryRelevance || aggregated.relevance);
+  const queryRelevanceScore = aggregated.searchMode === "institution" ? 100 : Math.round(rawQueryRelevance);
+  const qScore = aggregated.searchMode === "institution" ? 100 : Math.round(Math.min(100, rawQueryRelevance));
   const seniorityScore = Math.min(100, Math.max(0, CURRENT_YEAR - careerStartYear) * 3);
 
   return {
