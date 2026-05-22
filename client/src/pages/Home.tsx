@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Bot, Bookmark, BookmarkCheck, ChevronDown, ExternalLink, FileText, Mail, MessageCircle, Moon, Phone, Search, Send, Settings, SlidersHorizontal, Sparkles, Sun, User, X } from "lucide-react";
-import { type ResearcherRecord } from "@/lib/data";
+import { type ResearchPaper, type ResearcherRecord } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
 type WeightKey = "query" | "research";
@@ -32,6 +32,40 @@ type OpenAlexMeta = {
   mergedResearchers?: number;
 };
 type OpenAlexResearchersResponse = { query: string; meta: OpenAlexMeta; researchers: ResearcherRecord[] };
+type RankingTopPaper = {
+  paper_id?: string | null;
+  title?: string | null;
+  year?: number | null;
+  similarity?: number | null;
+  weighted_contribution?: number | null;
+  share_of_q?: number | null;
+};
+type RankingApiResult = {
+  researcher_id?: string;
+  name?: string | null;
+  institution?: string | null;
+  region?: string | null;
+  Q?: number | string | null;
+  R?: number | string | null;
+  H?: number | string | null;
+  final_score?: number | string | null;
+  reason?: {
+    primary_driver?: string | null;
+    summary?: string | null;
+    highlights?: string[];
+    top_papers?: RankingTopPaper[];
+  };
+  contribution?: {
+    matched_paper_count?: number | null;
+    paper_contributions?: RankingTopPaper[];
+  };
+  components?: Record<string, unknown>;
+};
+type RankingApiResponse = {
+  results?: RankingApiResult[];
+  pareto?: unknown;
+  debug?: Record<string, unknown>;
+};
 
 interface Filters {
   weights: Record<WeightKey, number>;
@@ -317,6 +351,171 @@ async function apiRequest<T>(url: string, options: RequestInit = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Request failed with HTTP ${response.status}.`);
   return data as T;
+}
+
+function finiteNumber(value: unknown, fallback: unknown = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (typeof fallback === "number" && Number.isFinite(fallback)) return fallback;
+  if (typeof fallback === "string" && fallback.trim()) {
+    const parsed = Number(fallback);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function percentFromUnit(value: unknown, fallback = 0) {
+  const numeric = finiteNumber(value, fallback);
+  if (numeric <= 1) return Math.max(0, numeric * 100);
+  return Math.max(0, numeric);
+}
+
+function componentNumber(components: Record<string, unknown> | undefined, keys: string[], fallback: unknown = 0) {
+  for (const key of keys) {
+    if (components && key in components) return finiteNumber(components[key], fallback);
+  }
+  return finiteNumber(fallback, 0);
+}
+
+function rankingPaperId(paper: RankingTopPaper, index: number) {
+  return (paper.paper_id || `ranking-paper-${index}`).trim();
+}
+
+function rankingPapers(result: RankingApiResult): ResearchPaper[] {
+  const seen = new Set<string>();
+  const papers = [...(result.reason?.top_papers || []), ...(result.contribution?.paper_contributions || [])];
+  return papers.flatMap((paper, index) => {
+    const title = (paper.title || "Matched paper").trim();
+    const id = rankingPaperId(paper, index);
+    const key = `${id}-${title}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{
+      id,
+      title,
+      year: finiteNumber(paper.year, 0),
+      venue: "Ranking backend",
+      venueType: "matched paper",
+      citations: 0,
+      recentCitations: 0,
+      concept: result.reason?.primary_driver || "Matched paper",
+      abstract: paper.similarity != null ? `Similarity: ${finiteNumber(paper.similarity).toFixed(3)}` : "",
+      url: id.startsWith("10.") ? `https://doi.org/${id}` : undefined,
+    }];
+  });
+}
+
+function mapRankingResult(result: RankingApiResult, index: number, query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number): ResearcherRecord {
+  const components = result.components || {};
+  const name = (result.name || `Researcher ${index + 1}`).trim();
+  const papers = rankingPapers(result);
+  const topPaper = papers[0];
+  const hIndex = componentNumber(components, ["h_index", "hIndex"], percentFromUnit(result.H));
+  const totalCitations = componentNumber(components, ["total_citations", "totalCitations", "lifetime_citations"], 0);
+  const rValue = finiteNumber(result.R, 0);
+  const recentCitations = componentNumber(components, ["R_raw", "r_raw", "recent_citations", "recentCitations", "citation_window_citations"], rValue > 1 ? rValue : 0);
+  const qRaw = finiteNumber(result.Q, 0);
+  const rNorm = percentFromUnit(componentNumber(components, ["R_norm", "r_norm"], rValue));
+  const finalScore = percentFromUnit(result.final_score, 0);
+  const matchSource: ResearcherRecord["matchSource"] =
+    searchMode === "author" ? "author-search" :
+    searchMode === "institution" ? "institution-search" :
+    "topic-relevance";
+  const primaryTopic = result.reason?.highlights?.[0] || topPaper?.title || "Backend-ranked match";
+  const matchedPaperCount = finiteNumber(result.contribution?.matched_paper_count, papers.length);
+  const startYear = papers.map((paper) => paper.year).filter(Boolean).sort((a, b) => a - b)[0] || YEAR_MAX;
+  const institution = result.institution || "Unknown institution";
+  const region = result.region || "";
+  return {
+    id: result.researcher_id || `ranking-${index}-${normalizeIdentityText(name)}`,
+    name,
+    initials: initials(name),
+    institution,
+    institutionId: "",
+    country: region || "Unknown",
+    region,
+    totalWorks: matchedPaperCount,
+    totalCitations,
+    recentCitations,
+    citationStartYear,
+    citationEndYear,
+    hIndex,
+    i10Index: 0,
+    careerStartYear: startYear,
+    yearsActive: Math.max(0, YEAR_MAX - startYear + 1),
+    qScore: percentFromUnit(result.Q, 0),
+    recencyScore: 0,
+    compositeScore: finalScore,
+    primaryTopic,
+    topics: [primaryTopic, ...(result.reason?.highlights || [])].filter(Boolean).slice(0, 5),
+    subfield: "",
+    field: "",
+    domain: "",
+    authorUrl: result.researcher_id ? `https://openalex.org/${result.researcher_id}` : undefined,
+    googleUrl: `https://www.google.com/search?q=${encodeURIComponent(`${name} ${institution}`)}`,
+    scholarUrl: `https://scholar.google.com/scholar?q=${encodeURIComponent(`${name} ${query}`)}`,
+    papers,
+    collaborators: [],
+    relevanceScore: qRaw,
+    queryRelevanceScore: qRaw,
+    queryRelevanceNorm: percentFromUnit(result.Q, 0),
+    recentCitationImpactNorm: rNorm,
+    finalScore,
+    whyMatched: result.reason?.summary || "Returned by the ranking backend for the current query.",
+    matchSource,
+    matchReason: result.reason?.summary || "Ranking backend match",
+    searchMode: searchMode === "institution" ? "institution" : searchMode === "author" ? "author" : "topic",
+    aiSummary: result.reason?.summary || "",
+    topPapers: papers,
+    researchThemes: result.reason?.highlights || [],
+    relatedResearchers: [],
+    publications: matchedPaperCount,
+  };
+}
+
+function mapRankingResponse(response: RankingApiResponse, query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number): OpenAlexResearchersResponse {
+  const researchers = (response.results || []).map((result, index) => mapRankingResult(result, index, query, searchMode, citationStartYear, citationEndYear));
+  return {
+    query,
+    meta: {
+      openAlexCount: researchers.length,
+      worksSampled: researchers.reduce((sum, researcher) => sum + researcher.papers.length, 0),
+      researchers: researchers.length,
+      apiKeyConfigured: true,
+      searchMode: searchMode === "institution" ? "institution" : searchMode === "author" ? "author" : "topic",
+      sourceLabel: "Ranking backend",
+      citationStartYear,
+      citationEndYear,
+    },
+    researchers,
+  };
+}
+
+function shouldUseRankingBackend(searchMode: SearchModeChoice) {
+  return searchMode === "auto" || searchMode === "topic";
+}
+
+async function fetchRankingResearchers(query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number, weights: Record<WeightKey, number>, signal: AbortSignal) {
+  const response = await apiRequest<RankingApiResponse>("/api/ranking/rank", {
+    method: "POST",
+    signal,
+    body: JSON.stringify({
+      query,
+      limit: 80,
+      top_k: 80,
+      use_simple_ranking: true,
+      q_weight: weights.query,
+      r_weight: weights.research,
+      citation_start_year: citationStartYear,
+      citation_end_year: citationEndYear,
+    }),
+  });
+  const mapped = mapRankingResponse(response, query, searchMode, citationStartYear, citationEndYear);
+  if (mapped.researchers.length === 0) throw new Error("Ranking backend returned no researchers.");
+  return mapped;
 }
 
 function normalizedMetricMap(list: ResearcherRecord[], valueFor: (researcher: ResearcherRecord) => number, logScale = false) {
@@ -1432,17 +1631,27 @@ export default function Home() {
   useEffect(() => {
     if (!activeQuery) return;
     const controller = new AbortController();
-    const params = new URLSearchParams({
-      query: activeQuery,
-      mode: searchMode,
-      citationStartYear: String(appliedYearRange.minYear),
-      citationEndYear: String(appliedYearRange.maxYear),
-    });
+    const fetchOpenAlexResearchers = async () => {
+      const params = new URLSearchParams({
+        query: activeQuery,
+        mode: searchMode,
+        citationStartYear: String(appliedYearRange.minYear),
+        citationEndYear: String(appliedYearRange.maxYear),
+      });
+      const result = await apiRequest<OpenAlexResearchersResponse>(`/api/openalex/researchers?${params.toString()}`, { signal: controller.signal });
+      return {
+        ...result,
+        meta: { ...result.meta, sourceLabel: result.meta.sourceLabel || "OpenAlex fallback" },
+      };
+    };
     setSearchLoading(true);
     setSearchError("");
     setOpenAlexMeta(undefined);
     setOpenAlexResearchers([]);
-    apiRequest<OpenAlexResearchersResponse>(`/api/openalex/researchers?${params.toString()}`, { signal: controller.signal })
+    const request = shouldUseRankingBackend(searchMode)
+      ? fetchRankingResearchers(activeQuery, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear, filters.weights, controller.signal).catch(() => fetchOpenAlexResearchers())
+      : fetchOpenAlexResearchers();
+    request
       .then((result) => {
         setOpenAlexResearchers(result.researchers);
         setOpenAlexMeta(result.meta);
@@ -1513,7 +1722,9 @@ export default function Home() {
     setSavedIds(new Set());
   };
   const historyForSearch = settings.searchHistory ? searchHistory : [];
-  const emptyState = searchError || (searchLoading ? "Searching OpenAlex..." : "No OpenAlex researchers found for this query.");
+  const requestedSearchSource = shouldUseRankingBackend(searchMode) ? "ranking backend" : "OpenAlex fallback";
+  const displayedSearchSource = openAlexMeta?.sourceLabel || requestedSearchSource;
+  const emptyState = searchError || (searchLoading ? `Searching ${requestedSearchSource}...` : `No researchers found for this query from ${displayedSearchSource}.`);
   const interfaceScale = Math.min(125, Math.max(80, Number(settings.interfaceScale) || 100));
   const uiScale = interfaceScale / 100;
   const appScaleStyle = {
@@ -1538,7 +1749,8 @@ export default function Home() {
           <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/8 bg-[#070a10] px-4">
             <div className="text-sm text-slate-400">Results for <span className="font-bold text-slate-100">"{activeQuery}"</span></div>
             <div className="flex items-center gap-2 text-[11px] text-slate-500">
-              <span>{searchLoading ? "Searching OpenAlex..." : `${resultList.length} researchers`}</span>
+              <span>{searchLoading ? `Searching ${requestedSearchSource}...` : `${resultList.length} researchers`}</span>
+              {!searchLoading && openAlexMeta?.sourceLabel && <span className="rounded bg-white/5 px-2 py-1 text-[10px] text-slate-500">{openAlexMeta.sourceLabel}</span>}
             </div>
           </div>
           <AutoAnalysisPanel list={resultList.slice(0, 30)} query={activeQuery} loading={searchLoading} searchMode={openAlexMeta?.searchMode} />
