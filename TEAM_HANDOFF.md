@@ -6,19 +6,19 @@ Subject: ResearchAI test build update and local run instructions
 
 Hi team,
 
-I am sharing a test build of ResearchAI for review. This version now uses live OpenAlex data instead of the previous prepared database, and we made several changes today to make search results more understandable and less misleading.
+I am sharing a test build of ResearchAI for review. This version now uses the shared ranking backend as the primary data source, so the frontend no longer depends on its own OpenAlex search path.
 
 Main updates:
 
 - Added explicit search modes: Auto, Name, Query, and Institution.
-- Name search now merges obvious duplicate OpenAlex author profiles, so split records for the same person are combined into one researcher profile.
-- Institution search now separates the matched institution from the author's current or last-known institution. For example, someone can be matched through Hebrew University of Jerusalem while their current OpenAlex profile lists another institution.
-- The results table now shows Q, R, and H-index. Q/R drive the default ranking; H-index is profile context only.
+- All search modes now call the ranking backend through the app's Express API.
+- The frontend passes `search_type`, `author_query`, `institution_query`, or `topic_query` when applicable, so backend-side strong filters can be enforced there.
+- The results table now shows Q and R. H-index is profile context only.
 - Q now means normalized query relevance. R means citations received by matched papers during the selected citation year range.
-- The citation year range is debounced, so dragging the range does not continuously trigger OpenAlex requests.
+- The citation year range is debounced, so dragging the range does not continuously trigger ranking backend requests.
 - UI readability and layout were improved, including light mode contrast and screen-size scaling in Settings.
 
-Please treat this as a local preview build rather than a production release. OpenAlex data can still contain duplicate profiles, historical affiliations, and incomplete paper coverage, so the interface now tries to expose why each result matched.
+Please treat this as a local preview build rather than a production release. Backend ranking and filter behavior should still be validated against expert expectations before production use.
 
 How to run it locally is included below. After running it, try a few searches such as:
 
@@ -36,27 +36,27 @@ Best,
 
 The search bar now lets users choose:
 
-- `Auto`: app guesses the search intent.
-- `Name`: searches OpenAlex authors.
-- `Query`: searches OpenAlex works/topics.
-- `Institution`: searches OpenAlex institutions and returns researchers connected to matched works.
+- `Auto`: default ranking backend search.
+- `Name`: sends `search_type=author` and `author_query`.
+- `Query`: sends `search_type=topic` and `topic_query`.
+- `Institution`: sends `search_type=institution` and `institution_query`.
 
 This avoids one input box silently mixing person, topic, and institution searches.
 
-### 2. Name search profile merging
+### 2. Backend search routing
 
-OpenAlex may return multiple author profiles for the same person, especially with initials, name order variations, spelling variants, or fragmented profiles.
+The frontend now routes every search mode through the shared ranking backend endpoint rather than querying its own researcher data source.
 
-For `Name` mode, ResearchAI now merges obvious variants into one result. Works, citations, i10-index, papers, topics, and collaborators are aggregated. H-index is not added together because H-index is not mathematically additive; the merged profile uses the strongest observed H-index.
+The backend is responsible for researcher lookup, matched papers, Q/R ranking signals, and any strong author or institution filters.
 
 ### 3. Matched institution vs current institution
 
 Institution search now keeps two separate concepts:
 
 - `Matched institution`: the institution that caused the result to match the search.
-- `Current institution`: the author profile's current or last-known institution from OpenAlex.
+- `Current institution`: the author's current or last-known institution if returned by the backend profile.
 
-This matters because researchers can move institutions. A person should still appear when they have a paper affiliation connected to the searched institution, even if their current OpenAlex profile lists another institution.
+This matters because researchers can move institutions. The UI keeps these fields separate when the backend returns both values.
 
 ### 4. Ranking and explainability
 
@@ -160,14 +160,14 @@ On Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
-Open `.env` and optionally set:
+Open `.env` and confirm the ranking backend URL:
 
 ```env
-OPENALEX_API_KEY=
+RANKING_API_URL=https://researcher-ranking-szk6rqcdwa-uc.a.run.app
 PORT=3000
 ```
 
-`OPENALEX_API_KEY` is optional for testing, but recommended because it improves OpenAlex API reliability and rate limits. AI chat keys are entered by each user inside the app Settings screen, so do not put personal OpenAI/Gemini/Claude keys in `.env` unless intentionally configuring a shared server fallback.
+The search UI uses the shared ranking backend as its data source. AI chat keys are entered by each user inside the app Settings screen, so do not put personal OpenAI/Gemini/Claude keys in `.env` unless intentionally configuring a shared server fallback.
 
 ### Step 3: Install dependencies
 
@@ -270,9 +270,9 @@ Write-Host "Created $zip"
 
 ## Current Limitations
 
-- OpenAlex data can still contain duplicate or fragmented author profiles.
-- Institution matches can reflect historical paper affiliations, not only current employment.
-- Q is normalized query relevance, not an official OpenAlex field.
-- R is computed from OpenAlex `counts_by_year` on the matched works and depends on the selected citation year range.
+- Backend ranking and strong-filter behavior should still be validated with representative queries.
+- Institution matches may reflect historical paper affiliations if the backend includes them.
+- Q is normalized query relevance from the ranking backend.
+- R is citation-window impact from the ranking backend and depends on the selected citation year range.
 - AI chat requires each tester to provide their own API key in Settings.
 - This is still a preview build and not yet a hosted production deployment.

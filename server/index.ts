@@ -4,7 +4,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { handleAiChatRequest } from "./ai";
 import { handleGetSaved, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./auth";
-import { handleOpenAlexResearchersRequest } from "./openalex";
 import { handleRankingHealthRequest, handleRankingRankRequest } from "./ranking";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,10 +52,6 @@ async function startServer() {
 
   app.put("/api/saved-researchers", (req, res) => {
     handleSetSaved(req, req.body, res);
-  });
-
-  app.get("/api/openalex/researchers", async (req, res) => {
-    await handleOpenAlexResearchersRequest(req, res);
   });
 
   app.get("/api/ranking/health", async (_req, res) => {

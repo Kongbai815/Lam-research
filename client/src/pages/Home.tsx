@@ -17,21 +17,17 @@ type CurrentUser = { id: string; identifier: string; createdAt: string };
 type ProviderKey = "gpt" | "gemini" | "claude" | "custom";
 type ApiKeyStorageChoice = "remember" | "forget";
 type ModelPreset = { label: string; value: string; description: string };
-type OpenAlexMeta = {
-  openAlexCount: number;
+type SearchMeta = {
+  resultCount: number;
   worksSampled: number;
   researchers: number;
   dbResponseTimeMs?: number;
-  apiKeyConfigured: boolean;
   searchMode?: "author" | "institution" | "topic";
   sourceLabel?: string;
   citationStartYear?: number;
   citationEndYear?: number;
-  authorsSampled?: number;
-  institutionsSampled?: number;
-  mergedResearchers?: number;
 };
-type OpenAlexResearchersResponse = { query: string; meta: OpenAlexMeta; researchers: ResearcherRecord[] };
+type ResearchersResponse = { query: string; meta: SearchMeta; researchers: ResearcherRecord[] };
 type RankingTopPaper = {
   paper_id?: string | null;
   title?: string | null;
@@ -249,7 +245,7 @@ function matchSourceLabel(source?: ResearcherRecord["matchSource"]) {
   if (source === "institution-search") return "Institution search";
   if (source === "works-search") return "Works search";
   if (source === "topic-relevance") return "Query relevance";
-  return "OpenAlex match";
+  return "Backend match";
 }
 
 function sameInstitutionLabel(a?: string, b?: string) {
@@ -293,9 +289,9 @@ function metricDescription(label: string) {
   if (normalized.includes("query relevance") || normalized.includes("q relevance") || normalized === "q" || normalized.includes("q_norm")) return "Q_norm: query relevance normalized within the visible result set. Higher means this author matched the search intent more strongly.";
   if (normalized.includes("research impact") || normalized.includes("r impact") || normalized === "r" || normalized.includes("r_norm") || normalized.includes("recent citation")) return "R_raw is citations received by matched papers during the selected citation year range. R_norm uses log(1 + R_raw), then normalizes within the result set.";
   if (normalized.includes("final")) return "Final Score = wQ * Q_norm + wR * R_norm. H-index is shown as profile context only.";
-  if (normalized.includes("h-index") || normalized.includes("h profile") || normalized === "h") return "Profile-only OpenAlex h-index. H=81 means the author has at least 81 works that each received at least 81 citations; it is not used in the default Q/R ranking.";
-  if (normalized.includes("raw citation")) return "Total OpenAlex cited_by_count for the author profile. This favors older and high-citation fields, so it is shown as context rather than used directly.";
-  if (normalized.includes("citation")) return "Citation signal from OpenAlex counts. The main ranking uses R for citation-window impact, not lifetime citations.";
+  if (normalized.includes("h-index") || normalized.includes("h profile") || normalized === "h") return "Profile-only h-index from the backend profile data. H=81 means the author has at least 81 works that each received at least 81 citations; it is not used in the default Q/R ranking.";
+  if (normalized.includes("raw citation")) return "Total citation count from the backend profile data. This favors older and high-citation fields, so it is shown as context rather than used directly.";
+  if (normalized.includes("citation")) return "Citation signal from the backend ranking data. The main ranking uses R for citation-window impact, not lifetime citations.";
   return "";
 }
 
@@ -476,15 +472,14 @@ function mapRankingResult(result: RankingApiResult, index: number, query: string
   };
 }
 
-function mapRankingResponse(response: RankingApiResponse, query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number): OpenAlexResearchersResponse {
+function mapRankingResponse(response: RankingApiResponse, query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number): ResearchersResponse {
   const researchers = (response.results || []).map((result, index) => mapRankingResult(result, index, query, searchMode, citationStartYear, citationEndYear));
   return {
     query,
     meta: {
-      openAlexCount: researchers.length,
+      resultCount: researchers.length,
       worksSampled: researchers.reduce((sum, researcher) => sum + researcher.papers.length, 0),
       researchers: researchers.length,
-      apiKeyConfigured: true,
       searchMode: searchMode === "institution" ? "institution" : searchMode === "author" ? "author" : "topic",
       sourceLabel: "Ranking backend",
       citationStartYear,
@@ -492,10 +487,6 @@ function mapRankingResponse(response: RankingApiResponse, query: string, searchM
     },
     researchers,
   };
-}
-
-function shouldUseRankingBackend(searchMode: SearchModeChoice) {
-  return ["auto", "topic", "author", "institution"].includes(searchMode);
 }
 
 async function fetchRankingResearchers(query: string, searchMode: SearchModeChoice, citationStartYear: number, citationEndYear: number, weights: Record<WeightKey, number>, signal: AbortSignal) {
@@ -753,7 +744,7 @@ function SettingsModal({ open, settings, onClose, onChange }: { open: boolean; s
           <section className="rounded-lg border border-white/8 bg-white/[0.025] p-4">
             <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-300">Data & Privacy</h3>
             <div className="rounded-md border border-white/8 px-3 py-3 text-sm text-slate-300">Ranking backend via same-app proxy</div>
-            <p className="mt-3 text-xs leading-5 text-slate-500">Default searches are fetched from the ranking backend. OpenAlex is kept only as a temporary fallback if the ranking service is unavailable.</p>
+            <p className="mt-3 text-xs leading-5 text-slate-500">Search results are fetched from the shared ranking backend so the interface uses the same persistent researcher data as the backend service.</p>
           </section>
         </div>
       </div>
@@ -1045,7 +1036,7 @@ function uniqueShortlist(items: Array<{ researcher?: ResearcherRecord; label: st
   }).slice(0, 3) as Array<{ researcher: ResearcherRecord; label: string; reason: string }>;
 }
 
-function AutoAnalysisPanel({ list, query, loading, searchMode }: { list: ResearcherRecord[]; query: string; loading: boolean; searchMode?: OpenAlexMeta["searchMode"] }) {
+function AutoAnalysisPanel({ list, query, loading, searchMode }: { list: ResearcherRecord[]; query: string; loading: boolean; searchMode?: SearchMeta["searchMode"] }) {
   if (loading) {
     return <section className="border-b border-white/8 bg-[#070a10] px-4 py-3 text-xs text-slate-500">Preparing automatic research brief...</section>;
   }
@@ -1533,8 +1524,8 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
   const headlineMetrics = [
     { label: "Q relevance", value: Math.round(researcher.queryRelevanceNorm || 0), caption: "Normalized query fit", color: "text-emerald-400", description: metricDescription("Query relevance") },
     { label: "R impact", value: formatNumber(researcher.recentCitations || 0), caption: `${researcher.citationStartYear || ""}-${researcher.citationEndYear || ""}`, color: "text-orange-400", description: metricDescription("Research impact") },
-    { label: "H profile", value: researcher.hIndex, caption: "OpenAlex context", color: "text-blue-400", description: metricDescription("H profile") },
-    { label: "Lifetime cites", value: formatNumber(researcher.totalCitations), caption: "OpenAlex total", color: "text-cyan-400", description: metricDescription("Raw citations") },
+    { label: "H profile", value: researcher.hIndex, caption: "Profile context", color: "text-blue-400", description: metricDescription("H profile") },
+    { label: "Lifetime cites", value: formatNumber(researcher.totalCitations), caption: "Profile total", color: "text-cyan-400", description: metricDescription("Raw citations") },
   ];
   return (
     <main className="h-screen overflow-y-auto bg-[#05070b] text-slate-100">
@@ -1553,11 +1544,11 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
         </section>
         <section className="mt-6"><RankingBreakdown researcher={researcher} weights={weights} /></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />AI Explanation</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
-        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">OpenAlex does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
+        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">The backend profile does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6">
           <h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Source Data & Reliability</h2>
           <div className="grid gap-3 sm:grid-cols-4">
-            <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">OpenAlex IDs</div><div className="mt-2 font-mono text-sm text-slate-100">{researcher.id}</div><div className="mt-1 text-[11px] text-slate-500">{researcher.institutionId || "No institution id"}</div></div>
+            <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Profile IDs</div><div className="mt-2 font-mono text-sm text-slate-100">{researcher.id}</div><div className="mt-1 text-[11px] text-slate-500">{researcher.institutionId || "No institution id"}</div></div>
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Indexed papers</div><div className="mt-2 text-2xl font-bold text-slate-100">{researcher.papers.length}</div><div className="mt-1 text-[11px] text-slate-500">{researcher.totalWorks} total works reported</div></div>
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Citation coverage</div><div className="mt-2 text-2xl font-bold text-slate-100">{Math.round(citationCoverage * 100)}%</div><div className="mt-1 text-[11px] text-slate-500">{formatNumber(paperCitationSample)} citations visible in indexed papers</div></div>
             <div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Collaborators shown</div><div className="mt-2 text-2xl font-bold text-slate-100">{researcher.collaborators.length}</div><div className="mt-1 text-[11px] text-slate-500">{researcher.coAuthorCount ? `${researcher.coAuthorCount} total co-authors reported` : "Only highlighted collaborators available"}</div></div>
@@ -1612,8 +1603,8 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode | undefined>();
   const [currentUser, setCurrentUser] = useState<CurrentUser | undefined>();
-  const [openAlexResearchers, setOpenAlexResearchers] = useState<ResearcherRecord[]>([]);
-  const [openAlexMeta, setOpenAlexMeta] = useState<OpenAlexMeta | undefined>();
+  const [researcherResults, setResearcherResults] = useState<ResearcherRecord[]>([]);
+  const [searchMeta, setSearchMeta] = useState<SearchMeta | undefined>();
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [appliedYearRange, setAppliedYearRange] = useState({ minYear: defaultFilters.minYear, maxYear: defaultFilters.maxYear });
@@ -1637,30 +1628,14 @@ export default function Home() {
   useEffect(() => {
     if (!activeQuery) return;
     const controller = new AbortController();
-    const fetchOpenAlexResearchers = async () => {
-      const params = new URLSearchParams({
-        query: activeQuery,
-        mode: searchMode,
-        citationStartYear: String(appliedYearRange.minYear),
-        citationEndYear: String(appliedYearRange.maxYear),
-      });
-      const result = await apiRequest<OpenAlexResearchersResponse>(`/api/openalex/researchers?${params.toString()}`, { signal: controller.signal });
-      return {
-        ...result,
-        meta: { ...result.meta, sourceLabel: result.meta.sourceLabel || "OpenAlex fallback" },
-      };
-    };
     setSearchLoading(true);
     setSearchError("");
-    setOpenAlexMeta(undefined);
-    setOpenAlexResearchers([]);
-    const request = shouldUseRankingBackend(searchMode)
-      ? fetchRankingResearchers(activeQuery, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear, filters.weights, controller.signal).catch(() => fetchOpenAlexResearchers())
-      : fetchOpenAlexResearchers();
-    request
+    setSearchMeta(undefined);
+    setResearcherResults([]);
+    fetchRankingResearchers(activeQuery, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear, filters.weights, controller.signal)
       .then((result) => {
-        setOpenAlexResearchers(result.researchers);
-        setOpenAlexMeta(result.meta);
+        setResearcherResults(result.researchers);
+        setSearchMeta(result.meta);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -1671,9 +1646,9 @@ export default function Home() {
       });
     return () => controller.abort();
   }, [activeQuery, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear]);
-  const countries = useMemo(() => Array.from(new Set(openAlexResearchers.map((researcher) => researcher.country).filter(Boolean))).sort().slice(0, 80), [openAlexResearchers]);
+  const countries = useMemo(() => Array.from(new Set(researcherResults.map((researcher) => researcher.country).filter(Boolean))).sort().slice(0, 80), [researcherResults]);
   const scored = useMemo(() => {
-    const filtered = openAlexResearchers.filter((researcher) => filters.country === "All" || researcher.country === filters.country);
+    const filtered = researcherResults.filter((researcher) => filters.country === "All" || researcher.country === filters.country);
     const qNorm = normalizedMetricMap(filtered, (researcher) => researcher.queryRelevanceScore ?? researcher.relevanceScore ?? researcherNameMatchScore(researcher, activeQuery));
     const rNorm = normalizedMetricMap(filtered, (researcher) => researcher.recentCitations || 0, true);
     const base = filtered
@@ -1689,7 +1664,7 @@ export default function Home() {
     if (filters.pool === "top10") return base.slice(0, 10);
     if (filters.pool === "frontier") return base.filter((item) => frontier.has(item.researcher.id));
     return base;
-  }, [activeQuery, openAlexResearchers, filters]);
+  }, [activeQuery, researcherResults, filters]);
   const sortedScored = useMemo(() => {
     const list = [...scored];
     if (tableSort.key === "rank") return tableSort.direction === "asc" ? list : list.reverse();
@@ -1705,8 +1680,8 @@ export default function Home() {
   const pageStart = currentPage * PAGE_SIZE;
   const pagedResults = resultList.slice(pageStart, pageStart + PAGE_SIZE);
   const selected = resultList.find((researcher) => researcher.id === selectedId) ?? pagedResults[0] ?? resultList[0];
-  const detail = resultList.find((researcher) => researcher.id === detailId) ?? openAlexResearchers.find((researcher) => researcher.id === detailId);
-  const savedResearchers = Array.from(savedIds).map((id) => openAlexResearchers.find((researcher) => researcher.id === id)).filter((researcher): researcher is ResearcherRecord => Boolean(researcher));
+  const detail = resultList.find((researcher) => researcher.id === detailId) ?? researcherResults.find((researcher) => researcher.id === detailId);
+  const savedResearchers = Array.from(savedIds).map((id) => researcherResults.find((researcher) => researcher.id === id)).filter((researcher): researcher is ResearcherRecord => Boolean(researcher));
   const rankMap = new Map(resultList.map((researcher, index) => [researcher.id, index + 1]));
   const chartResearchers = currentPage === 0 ? pagedResults : [...resultList.slice(0, 10), ...pagedResults.filter((researcher) => !resultList.slice(0, 10).some((top) => top.id === researcher.id))];
   const runSearch = (nextQuery?: string) => { const value = (nextQuery ?? query).trim() || DEFAULT_QUERY; setQuery(value); setActiveQuery(value); setSelectedId(undefined); setPage(0); setFilters((prev) => ({ ...prev, pool: "pool" })); if (settings.searchHistory) setSearchHistory((prev) => [value, ...prev.filter((item) => item.toLowerCase() !== value.toLowerCase())].slice(0, 10)); };
@@ -1728,8 +1703,8 @@ export default function Home() {
     setSavedIds(new Set());
   };
   const historyForSearch = settings.searchHistory ? searchHistory : [];
-  const requestedSearchSource = shouldUseRankingBackend(searchMode) ? "ranking backend" : "OpenAlex fallback";
-  const displayedSearchSource = openAlexMeta?.sourceLabel || requestedSearchSource;
+  const requestedSearchSource = "ranking backend";
+  const displayedSearchSource = searchMeta?.sourceLabel || requestedSearchSource;
   const emptyState = searchError || (searchLoading ? `Searching ${requestedSearchSource}...` : `No researchers found for this query from ${displayedSearchSource}.`);
   const interfaceScale = Math.min(125, Math.max(80, Number(settings.interfaceScale) || 100));
   const uiScale = interfaceScale / 100;
@@ -1756,10 +1731,10 @@ export default function Home() {
             <div className="text-sm text-slate-400">Results for <span className="font-bold text-slate-100">"{activeQuery}"</span></div>
             <div className="flex items-center gap-2 text-[11px] text-slate-500">
               <span>{searchLoading ? `Searching ${requestedSearchSource}...` : `${resultList.length} researchers`}</span>
-              {!searchLoading && openAlexMeta?.sourceLabel && <span className="rounded bg-white/5 px-2 py-1 text-[10px] text-slate-500">{openAlexMeta.sourceLabel}</span>}
+              {!searchLoading && searchMeta?.sourceLabel && <span className="rounded bg-white/5 px-2 py-1 text-[10px] text-slate-500">{searchMeta.sourceLabel}</span>}
             </div>
           </div>
-          <AutoAnalysisPanel list={resultList.slice(0, 30)} query={activeQuery} loading={searchLoading} searchMode={openAlexMeta?.searchMode} />
+          <AutoAnalysisPanel list={resultList.slice(0, 30)} query={activeQuery} loading={searchLoading} searchMode={searchMeta?.searchMode} />
           <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} />
           <PaginationBar page={currentPage} total={resultList.length} onPageChange={setPage} />
         </section>

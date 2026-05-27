@@ -60,13 +60,13 @@ This repo includes `render.yaml`, so Render can create the test web service from
 4. Choose **Blueprint**.
 5. Connect the GitHub repository.
 6. Render will read `render.yaml` and create `research-ai-test`.
-7. When Render asks for `OPENALEX_API_KEY`, paste your OpenAlex key or leave it blank for a light test.
+7. Confirm `RANKING_API_URL` points to the shared ranking backend.
 8. Deploy and open the generated `https://...onrender.com` URL.
 
 The Blueprint uses:
 
 ```text
-Build command: corepack enable && pnpm install --frozen-lockfile && pnpm run build
+Build command: pnpm install --frozen-lockfile && pnpm run build
 Start command: node scripts/start.mjs
 Health check: /health
 Plan: free
@@ -80,7 +80,6 @@ Environment variables:
 NODE_VERSION=22.22.0
 NODE_ENV=production
 RESEARCH_AI_SHOW_DEV_CODE=false
-OPENALEX_API_KEY=your_openalex_key_optional
 RANKING_API_URL=https://researcher-ranking-szk6rqcdwa-uc.a.run.app
 RANKING_API_AUTH_TOKEN=optional_only_if_required
 ```
@@ -96,7 +95,7 @@ POST /api/ranking/rank
 
 The browser should call these local Express routes instead of calling the Cloud Run ranking service directly. Do not place the ranking service's database password, Pinecone API key, or other backend secrets in this app unless we later decide to redeploy that Python service ourselves.
 
-Free-plan note: the search UI and OpenAlex proxy work fine for a demo, but file-backed accounts and saved researchers are not durable on Render's free web service filesystem. Use the test version mainly for search demos; add a managed database before relying on accounts or saved profiles.
+Free-plan note: the search UI and ranking backend proxy work fine for a demo, but file-backed accounts and saved researchers are not durable on Render's free web service filesystem. Use the test version mainly for search demos; add a managed database before relying on accounts or saved profiles.
 
 ## Deploy To Railway
 

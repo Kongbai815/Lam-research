@@ -7,7 +7,7 @@ import { defineConfig, type Plugin, type ViteDevServer } from "vite";
 import { vitePluginManusRuntime } from "vite-plugin-manus-runtime";
 import { handleAiChatRequest } from "./server/ai";
 import { handleGetSaved, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./server/auth";
-import { handleOpenAlexResearchersRequest } from "./server/openalex";
+import { handleRankingHealthRequest, handleRankingRankRequest } from "./server/ranking";
 
 // =============================================================================
 // Manus Debug Collector - Vite Plugin
@@ -138,7 +138,8 @@ function vitePluginManusDebugCollector(): Plugin {
         if (req.method === "GET" && route === "/auth/me") return handleMe(req, res);
         if (req.method === "GET" && route === "/saved-researchers") return handleGetSaved(req, res);
         if (req.method === "PUT" && route === "/saved-researchers") return readBody((body) => handleSetSaved(req, body, res));
-        if (req.method === "GET" && route === "/openalex/researchers") return handleOpenAlexResearchersRequest(req, res);
+        if (req.method === "GET" && route === "/ranking/health") return handleRankingHealthRequest({}, res);
+        if (req.method === "POST" && route === "/ranking/rank") return readBody((body) => handleRankingRankRequest(body, res));
         return next();
       });
 
