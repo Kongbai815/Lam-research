@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Bot, Bookmark, BookmarkCheck, ChevronDown, ExternalLink, FileText, Mail, MessageCircle, Moon, Phone, Search, Send, Settings, SlidersHorizontal, Sparkles, Sun, User, X } from "lucide-react";
 import { type ResearchPaper, type ResearcherRecord } from "@/lib/data";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,7 @@ type CurrentUser = { id: string; identifier: string; createdAt: string };
 type ProviderKey = "gpt" | "gemini" | "claude" | "custom";
 type ApiKeyStorageChoice = "remember" | "forget";
 type ModelPreset = { label: string; value: string; description: string };
+type AiAutoRequest = { id: number; prompt: string; researcherId?: string };
 type SearchMeta = {
   resultCount: number;
   worksSampled: number;
@@ -40,6 +41,9 @@ type RankingApiResult = {
   researcher_id?: string;
   name?: string | null;
   institution?: string | null;
+  country?: string | null;
+  country_code?: string | null;
+  countryCode?: string | null;
   region?: string | null;
   Q?: number | string | null;
   R?: number | string | null;
@@ -89,7 +93,15 @@ interface AppSettings {
 }
 
 const DEFAULT_QUERY = "quantum computing algorithms";
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 20;
+const RESULT_LIMIT = 100;
+const SAVED_PROFILE_STORAGE_KEY = "research-ai-saved-profiles";
+const DEFAULT_INVESTMENT_PROMPT = [
+  "Assume you are evaluating whether to invest in or support this academic researcher in the context of the current search query.",
+  "Summarize the person's relevance to the query, depth and breadth of research, recent citation-window impact, institutional or lab context, collaboration potential, and visible risks or data gaps.",
+  "Use only the provided ranking/profile context. Do not invent facts, and do not mention LAM or any private business intent.",
+  "End with a concise recommendation: strong candidate, worth reviewing, or lower priority, with the reason."
+].join(" ");
 const TOPIC_FALLBACK = ["Quantum computing algorithms", "AI in healthcare", "Post-quantum cryptography", "Vision-language models", "Smart agriculture AI"];
 const searchModeOptions: Array<{ value: SearchModeChoice; label: string; placeholder: string }> = [
   { value: "auto", label: "Default", placeholder: "Search researchers, topics, institutions..." },
@@ -154,8 +166,78 @@ const defaultFilters: Filters = {
   country: "All",
   pool: "pool",
   chartMode: "q-r",
-  open: { saved: true, ranking: true, frontier: true, year: true, country: false, type: false },
+  open: { saved: true, ranking: true, year: true, country: false, type: false },
 };
+
+const COUNTRY_CODE_LABELS: Record<string, string> = {
+  US: "United States",
+  CA: "Canada",
+  CN: "China",
+  HK: "Hong Kong",
+  TW: "Taiwan",
+  JP: "Japan",
+  KR: "South Korea",
+  SG: "Singapore",
+  AU: "Australia",
+  NZ: "New Zealand",
+  GB: "United Kingdom",
+  UK: "United Kingdom",
+  IE: "Ireland",
+  FR: "France",
+  DE: "Germany",
+  IT: "Italy",
+  ES: "Spain",
+  PT: "Portugal",
+  NL: "Netherlands",
+  BE: "Belgium",
+  CH: "Switzerland",
+  AT: "Austria",
+  SE: "Sweden",
+  NO: "Norway",
+  DK: "Denmark",
+  FI: "Finland",
+  PL: "Poland",
+  CZ: "Czech Republic",
+  GR: "Greece",
+  IL: "Israel",
+  IN: "India",
+  MY: "Malaysia",
+  TH: "Thailand",
+  VN: "Vietnam",
+  BR: "Brazil",
+  MX: "Mexico",
+  CL: "Chile",
+  AR: "Argentina",
+  ZA: "South Africa",
+};
+
+const COUNTRY_ALIASES: Record<string, string> = {
+  "usa": "United States",
+  "u s a": "United States",
+  "united states of america": "United States",
+  "uk": "United Kingdom",
+  "u k": "United Kingdom",
+  "england": "United Kingdom",
+  "scotland": "United Kingdom",
+  "wales": "United Kingdom",
+  "northern ireland": "United Kingdom",
+  "peoples republic of china": "China",
+  "people s republic of china": "China",
+  "south korea": "South Korea",
+  "republic of korea": "South Korea",
+};
+
+const SUBNATIONAL_REGION_NAMES = new Set([
+  "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia",
+  "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland",
+  "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire",
+  "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania",
+  "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+  "west virginia", "wisconsin", "wyoming", "district of columbia", "vaud", "wellington region", "ontario", "quebec",
+  "british columbia", "new south wales", "victoria", "queensland", "western australia",
+]);
+
+const COUNTRY_LABELS = new Set([...Object.values(COUNTRY_CODE_LABELS), "Hong Kong", "Taiwan"]);
 
 function readStoredSettings() {
   if (typeof window === "undefined") return defaultAppSettings;
@@ -191,6 +273,40 @@ function persistSettings(settings: AppSettings) {
   if (!settings.rememberApiKey) delete savedApiKeys[settings.aiProvider];
   const saved = { ...settings, savedApiKeys, apiKey: "" };
   window.localStorage.setItem("research-ai-settings", JSON.stringify(saved));
+}
+
+function readStoredSavedProfiles() {
+  if (typeof window === "undefined") return {} as Record<string, ResearcherRecord>;
+  try {
+    const raw = window.localStorage.getItem(SAVED_PROFILE_STORAGE_KEY);
+    if (!raw) return {} as Record<string, ResearcherRecord>;
+    const parsed = JSON.parse(raw) as Record<string, ResearcherRecord>;
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => value && typeof value.id === "string" && typeof value.name === "string")) as Record<string, ResearcherRecord>;
+  } catch {
+    return {} as Record<string, ResearcherRecord>;
+  }
+}
+
+function persistSavedProfiles(savedProfiles: Record<string, ResearcherRecord>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SAVED_PROFILE_STORAGE_KEY, JSON.stringify(savedProfiles));
+}
+
+function normalizeCountryLabel(value?: string | null) {
+  const raw = (value || "").trim();
+  if (!raw) return "";
+  const upper = raw.toUpperCase();
+  if (COUNTRY_CODE_LABELS[upper]) return COUNTRY_CODE_LABELS[upper];
+  const normalized = normalizeIdentityText(raw);
+  if (COUNTRY_ALIASES[normalized]) return COUNTRY_ALIASES[normalized];
+  const byName = Array.from(COUNTRY_LABELS).find((country) => normalizeIdentityText(country) === normalized);
+  if (byName) return byName;
+  if (SUBNATIONAL_REGION_NAMES.has(normalized)) return "";
+  return /^[A-Z]{2}$/.test(upper) ? upper : "";
+}
+
+function countryFromRankingResult(result: RankingApiResult) {
+  return normalizeCountryLabel(result.country) || normalizeCountryLabel(result.country_code) || normalizeCountryLabel(result.countryCode) || normalizeCountryLabel(result.region);
 }
 
 function formatNumber(value: number) {
@@ -237,6 +353,17 @@ function googleResearcherUrl(researcher: ResearcherRecord) {
 
 function googleScholarUrl(researcher: ResearcherRecord) {
   return researcher.scholarUrl || `https://scholar.google.com/scholar?q=${encodeURIComponent(`${researcher.name} ${researcher.primaryTopic}`)}`;
+}
+
+function researcherAiPrompt(researcher: ResearcherRecord, query: string) {
+  const affiliation = affiliationDisplay(researcher);
+  return [
+    DEFAULT_INVESTMENT_PROMPT,
+    "",
+    `Focus on this researcher: ${researcher.name}.`,
+    `Current query: ${query || "not specified"}.`,
+    `Visible profile: institution=${affiliation.primary}; topic=${researcher.primaryTopic}; Q_norm=${Math.round(researcher.queryRelevanceNorm || 0)}; R_raw=${researcher.recentCitations || 0}; R_norm=${Math.round(researcher.recentCitationImpactNorm || 0)}; profile-only H-index=${researcher.hIndex}; lifetime citations=${researcher.totalCitations}; works=${researcher.totalWorks}.`,
+  ].join("\n");
 }
 
 function matchSourceLabel(source?: ResearcherRecord["matchSource"]) {
@@ -286,7 +413,7 @@ function AffiliationSummary({ researcher, className = "", noteClassName = "text-
 
 function metricDescription(label: string) {
   const normalized = label.toLowerCase();
-  if (normalized.includes("query relevance") || normalized.includes("q relevance") || normalized === "q" || normalized.includes("q_norm")) return "Q_norm: query relevance normalized within the visible result set. Higher means this author matched the search intent more strongly.";
+  if (normalized.includes("query relevance") || normalized.includes("q relevance") || normalized === "q" || normalized.includes("q_norm")) return "Q_norm: backend query relevance scaled to 0-100. Higher means this author matched the search intent more strongly.";
   if (normalized.includes("research impact") || normalized.includes("r impact") || normalized === "r" || normalized.includes("r_norm") || normalized.includes("recent citation")) return "R_raw is citations received by matched papers during the selected citation year range. R_norm uses log(1 + R_raw), then normalizes within the result set.";
   if (normalized.includes("final")) return "Final Score = wQ * Q_norm + wR * R_norm. H-index is shown as profile context only.";
   if (normalized.includes("h-index") || normalized.includes("h profile") || normalized === "h") return "Profile-only h-index from the backend profile data. H=81 means the author has at least 81 works that each received at least 81 citations; it is not used in the default Q/R ranking.";
@@ -425,13 +552,14 @@ function mapRankingResult(result: RankingApiResult, index: number, query: string
   const startYear = papers.map((paper) => paper.year).filter(Boolean).sort((a, b) => a - b)[0] || YEAR_MAX;
   const institution = result.institution || "Unknown institution";
   const region = result.region || "";
+  const country = countryFromRankingResult(result);
   return {
     id: result.researcher_id || `ranking-${index}-${normalizeIdentityText(name)}`,
     name,
     initials: initials(name),
     institution,
     institutionId: "",
-    country: region || "Unknown",
+    country: country || "Unknown",
     region,
     totalWorks: matchedPaperCount,
     totalCitations,
@@ -501,8 +629,8 @@ async function fetchRankingResearchers(query: string, searchMode: SearchModeChoi
     body: JSON.stringify({
       query,
       ...searchFields,
-      limit: 80,
-      top_k: 80,
+      limit: RESULT_LIMIT,
+      top_k: RESULT_LIMIT,
       use_simple_ranking: true,
       q_weight: weights.query,
       r_weight: weights.research,
@@ -966,13 +1094,13 @@ function ChatFloatingButton({ query, settings }: { query: string; settings: AppS
   );
 }
 
-function ResultsAiPanel({ list, query, settings, researcher }: { list: ResearcherRecord[]; query: string; settings: AppSettings; researcher?: ResearcherRecord }) {
-  const [open, setOpen] = useState(false);
+function ResultsAiPanel({ list, query, settings, researcher, autoRequest }: { list: ResearcherRecord[]; query: string; settings: AppSettings; researcher?: ResearcherRecord; autoRequest?: AiAutoRequest }) {
+  const [open, setOpen] = useState(true);
   const [draft, setDraft] = useState("");
-  const [customPrompt, setCustomPrompt] = useState("Create a concise research brief in the context of the current query. Compare breadth, depth, query fit, and recent citation-window impact. Recommend a short list for closer review. Do not mention LAM, funding, business intent, or any private organization.");
-  const [promptOpen, setPromptOpen] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState(DEFAULT_INVESTMENT_PROMPT);
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const handledAutoRequest = useRef<number | undefined>(undefined);
   const ask = async (override?: string) => {
     const text = (override ?? draft).trim();
     if (!text || loading) return;
@@ -984,7 +1112,8 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
       const answer = await requestAiAnswer(settings, nextMessages, [
         `Current search query: ${query}`,
         researcher ? `Currently highlighted researcher: ${researcher.name}; institution: ${affiliationDisplay(researcher).primary}; topic: ${researcher.primaryTopic}; Q_norm: ${Math.round(researcher.queryRelevanceNorm || 0)}; R_raw citation-window citations: ${researcher.recentCitations || 0}; R_norm: ${Math.round(researcher.recentCitationImpactNorm || 0)}; profile-only H-index: ${researcher.hIndex}; lifetime citations: ${researcher.totalCitations}.` : "",
-        `Current page researchers:\n${researcherContext(list)}`,
+        "Ordinal references such as 'the first person' or 'the second researcher' refer to the current visible page order below.",
+        `Current visible researchers:\n${researcherContext(list)}`,
       ].filter(Boolean).join("\n\n"));
       setMessages((prev) => [...prev, { role: "assistant", content: answer }]);
     } catch (error) {
@@ -993,6 +1122,13 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
       setLoading(false);
     }
   };
+  useEffect(() => {
+    if (!autoRequest || handledAutoRequest.current === autoRequest.id) return;
+    handledAutoRequest.current = autoRequest.id;
+    setOpen(true);
+    setCustomPrompt(autoRequest.prompt);
+    void ask(autoRequest.prompt);
+  }, [autoRequest?.id]);
   return (
     <section className="rounded-lg border border-white/8 bg-white/[0.025]">
       <button onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between px-4 py-3 text-left">
@@ -1001,19 +1137,15 @@ function ResultsAiPanel({ list, query, settings, researcher }: { list: Researche
       </button>
       {open && (
         <div className="border-t border-white/8">
-          <div className="px-4 py-3 text-[11px] leading-5 text-slate-500">Ask for shortlist logic, compare visible researchers, or check whether the highlighted profile looks well-supported by the returned ranking data.</div>
+          <div className="px-4 py-3 text-[11px] leading-5 text-slate-500">Ask about the selected researcher or visible ranks. For example: "Tell me about the first person."</div>
           <div className="border-t border-white/8 px-4 py-3">
-            <button onClick={() => setPromptOpen((value) => !value)} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-300 hover:text-cyan-200">Custom prompt</button>
-            {promptOpen && (
-              <div className="mt-2 space-y-2">
-                <textarea value={customPrompt} onChange={(event) => setCustomPrompt(event.target.value)} className="h-24 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs leading-5 text-slate-300 outline-none placeholder:text-slate-600" />
-                <button disabled={loading} onClick={() => ask(customPrompt)} className="rounded-md border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50">Run prompt on current results</button>
-              </div>
-            )}
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-300">Default prompt</div>
+            <textarea value={customPrompt} onChange={(event) => setCustomPrompt(event.target.value)} className="h-28 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs leading-5 text-slate-300 outline-none placeholder:text-slate-600" />
+            <button disabled={loading} onClick={() => ask(customPrompt)} className="mt-2 rounded-md border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50">Run prompt</button>
           </div>
           <div className="flex min-h-[280px] flex-col">
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 text-sm">
-            {messages.length === 0 ? <p className="text-slate-500">Try: "Which three people here are strongest for this query?" or "Does this selected profile look data-complete?"</p> : messages.map((message, index) => <div key={index} className={cn("max-w-[88%] rounded-lg px-3 py-2 leading-6", message.role === "user" ? "ml-auto bg-emerald-600 text-white" : "bg-black/20 text-slate-300")}>{message.content}</div>)}
+            {messages.length === 0 ? <p className="text-slate-500">Click the AI button beside a researcher, or ask directly: "Tell me about the first person."</p> : messages.map((message, index) => <div key={index} className={cn("max-w-[88%] rounded-lg px-3 py-2 leading-6", message.role === "user" ? "ml-auto bg-emerald-600 text-white" : "bg-black/20 text-slate-300")}>{message.content}</div>)}
             {loading && <div className="max-w-[88%] rounded-lg bg-black/20 px-3 py-2 leading-6 text-slate-300">Thinking...</div>}
           </div>
           <div className="flex items-center gap-2 border-t border-white/8 p-4">
@@ -1223,7 +1355,7 @@ function LandingPage({ query, setQuery, onSearch, history, searchMode, setSearch
   );
 }
 
-function FilterRail({ filters, setFilters, countries, chartResearchers, selected, savedResearchers, rankMap, onSelect }: { filters: Filters; setFilters: (filters: Filters) => void; countries: string[]; chartResearchers: ResearcherRecord[]; selected?: ResearcherRecord; savedResearchers: ResearcherRecord[]; rankMap: Map<string, number>; onSelect: (researcher: ResearcherRecord) => void }) {
+function FilterRail({ filters, setFilters, countries, selected, savedResearchers, onSelect, onToggleSave }: { filters: Filters; setFilters: (filters: Filters) => void; countries: string[]; selected?: ResearcherRecord; savedResearchers: ResearcherRecord[]; onSelect: (researcher: ResearcherRecord) => void; onToggleSave: (researcher: ResearcherRecord) => void }) {
   return (
     <aside className="w-[var(--filter-rail-width)] shrink-0 overflow-y-auto border-r border-white/8 bg-[#070a10] px-5 py-5">
       <Section id="saved" title={`Saved Researchers (${savedResearchers.length})`} filters={filters} setFilters={setFilters}>
@@ -1232,14 +1364,16 @@ function FilterRail({ filters, setFilters, countries, chartResearchers, selected
             <p className="rounded-md border border-white/8 bg-white/[0.025] px-3 py-2 text-xs text-slate-500">No saved researchers yet.</p>
           ) : (
             savedResearchers.map((researcher) => (
-              <button
+              <div
                 key={researcher.id}
-                onClick={() => onSelect(researcher)}
-                className={cn("flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-white/[0.04]", selected?.id === researcher.id ? "bg-blue-500/15 text-blue-100" : "text-slate-400")}
+                className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white/[0.04]", selected?.id === researcher.id ? "bg-blue-500/15 text-blue-100" : "text-slate-400")}
               >
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-500/20 text-[9px] font-bold text-blue-200">{researcher.initials || initials(researcher.name)}</span>
-                <span className="min-w-0 flex-1 truncate">{researcher.name}</span>
-              </button>
+                <button onClick={() => onSelect(researcher)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-500/20 text-[9px] font-bold text-blue-200">{researcher.initials || initials(researcher.name)}</span>
+                  <span className="min-w-0 flex-1 truncate">{researcher.name}</span>
+                </button>
+                <button title="Remove saved researcher" onClick={() => onToggleSave(researcher)} className="shrink-0 rounded p-1 text-slate-500 hover:bg-white/8 hover:text-slate-100"><X className="h-3.5 w-3.5" /></button>
+              </div>
             ))
           )}
         </div>
@@ -1255,13 +1389,12 @@ function FilterRail({ filters, setFilters, countries, chartResearchers, selected
           </div>
         </div>
       </Section>
-      <Section id="frontier" title="Trade-off Picks" filters={filters} setFilters={setFilters}><ParetoChart list={chartResearchers} selected={selected} rankMap={rankMap} mode={filters.chartMode} onModeChange={(chartMode) => setFilters({ ...filters, chartMode })} onSelect={onSelect} /></Section>
       <Section id="year" title="Citation Year Range" filters={filters} setFilters={setFilters}>
         <YearRangeSlider filters={filters} setFilters={setFilters} />
       </Section>
       <Section id="country" title="Country" filters={filters} setFilters={setFilters}><select value={filters.country} onChange={(event) => setFilters({ ...filters, country: event.target.value })} className="w-full rounded-md border border-white/10 bg-[#0d1119] px-2 py-2 text-xs text-slate-200 outline-none"><option>All</option>{countries.map((country) => <option key={country}>{country}</option>)}</select></Section>
       <Section id="type" title="Researcher Type" filters={filters} setFilters={setFilters}>
-        <div className="grid grid-cols-1 gap-1.5">{[["pool", "Pool"], ["top10", "Top 10"], ["frontier", "Trade-off picks"]].map(([value, label]) => <button key={value} onClick={() => setFilters({ ...filters, pool: value as ResearcherPool })} className={cn("rounded-md border px-3 py-2 text-left text-xs", filters.pool === value ? "border-blue-500/50 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-400")}>{label}</button>)}</div>
+        <div className="grid grid-cols-1 gap-1.5">{[["pool", "Pool"], ["top10", "Top 10"]].map(([value, label]) => <button key={value} onClick={() => setFilters({ ...filters, pool: value as ResearcherPool })} className={cn("rounded-md border px-3 py-2 text-left text-xs", filters.pool === value ? "border-blue-500/50 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-400")}>{label}</button>)}</div>
       </Section>
     </aside>
   );
@@ -1278,6 +1411,7 @@ function ResearcherTable({
   onSelect,
   onOpenDetail,
   onToggleSave,
+  onAskAi,
 }: {
   list: ResearcherRecord[];
   selected?: ResearcherRecord;
@@ -1288,7 +1422,8 @@ function ResearcherTable({
   onSort: (key: TableSortKey) => void;
   onSelect: (researcher: ResearcherRecord) => void;
   onOpenDetail: (researcher: ResearcherRecord) => void;
-  onToggleSave: (id: string) => void;
+  onToggleSave: (researcher: ResearcherRecord) => void;
+  onAskAi: (researcher: ResearcherRecord) => void;
 }) {
   const metricHeader = (key: TableSortKey, label: string, title: string) => (
     <button title={title} onClick={() => onSort(key)} className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/8 hover:text-slate-100">
@@ -1339,7 +1474,7 @@ function ResearcherTable({
               </td>
               <td className="px-3 py-3.5 font-mono text-base font-extrabold text-emerald-300">{Math.round(researcher.queryRelevanceNorm || 0)}</td>
               <td className="px-3 py-3.5 font-mono text-base font-extrabold text-orange-300">{formatNumber(researcher.recentCitations || 0)}</td>
-              <td className="px-3 py-3.5"><div className="flex items-center gap-1.5 text-slate-400"><button title={savedIds.has(researcher.id) ? "Saved" : "Save researcher"} onClick={(event) => { event.stopPropagation(); onToggleSave(researcher.id); }} className={cn("rounded p-1.5 hover:bg-white/8 hover:text-slate-100", savedIds.has(researcher.id) && "text-cyan-300")}>{savedIds.has(researcher.id) ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}</button><a title="Search on Google" href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="rounded p-1.5 hover:bg-white/8 hover:text-slate-100"><ExternalLink className="h-4 w-4" /></a></div></td>
+              <td className="px-3 py-3.5"><div className="flex items-center gap-1.5 text-slate-400"><button title={savedIds.has(researcher.id) ? "Saved" : "Save researcher"} onClick={(event) => { event.stopPropagation(); onToggleSave(researcher); }} className={cn("rounded p-1.5 hover:bg-white/8 hover:text-slate-100", savedIds.has(researcher.id) && "text-cyan-300")}>{savedIds.has(researcher.id) ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}</button><a title="Search on Google" href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="rounded p-1.5 hover:bg-white/8 hover:text-slate-100"><ExternalLink className="h-4 w-4" /></a><button title="Ask AI about this researcher" onClick={(event) => { event.stopPropagation(); onAskAi(researcher); }} className="rounded p-1.5 hover:bg-white/8 hover:text-cyan-200"><Bot className="h-4 w-4" /></button></div></td>
             </tr>
           );
         })}</tbody>
@@ -1498,25 +1633,42 @@ function RankingBreakdown({ researcher, weights, compact = false }: { researcher
   );
 }
 
-function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, list, query, settings, weights }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; list: ResearcherRecord[]; query: string; settings: AppSettings; weights: Record<WeightKey, number> }) {
+function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, onAskAi, list, query, settings, autoRequest }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; onAskAi: () => void; list: ResearcherRecord[]; query: string; settings: AppSettings; autoRequest?: AiAutoRequest }) {
   return (
     <aside className="w-[var(--side-summary-width)] shrink-0 overflow-y-auto border-l border-white/8 bg-[#070a10] p-4">
       {researcher ? (
         <>
-          <div className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><div className="flex items-start gap-3"><div className="flex h-12 w-12 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-base font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div><div className="min-w-0"><h2 className="truncate font-bold text-slate-100">{researcher.name}</h2><AffiliationSummary researcher={researcher} className="text-xs text-slate-500" /><p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-blue-300">{affiliationDisplay(researcher).country} - since {researcher.careerStartYear || "n/a"}</p><span title={researcher.matchReason || researcher.whyMatched} className="mt-2 inline-flex max-w-full rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span></div></div><div className="mt-3 grid grid-cols-2 gap-2">{[["Q", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R", formatNumber(researcher.recentCitations || 0), "text-orange-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-md border border-white/8 bg-black/10 p-2"><div className={cn("font-mono text-lg font-extrabold", color as string)}>{value}</div><div className="text-[10px] text-slate-500">{label}</div></div>)}</div><div className="mt-3 flex gap-2"><button onClick={onToggleSave} className={cn("min-w-0 flex-1 rounded-md border border-white/8 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved" : "Save"}</button><button onClick={onOpenDetail} className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Details</button></div></div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.025] p-3.5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-base font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div>
+              <div className="min-w-0">
+                <h2 className="truncate font-bold text-slate-100">{researcher.name}</h2>
+                <AffiliationSummary researcher={researcher} className="text-xs text-slate-500" />
+                <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-blue-300">{affiliationDisplay(researcher).country} - since {researcher.careerStartYear || "n/a"}</p>
+                <span title={researcher.matchReason || researcher.whyMatched} className="mt-2 inline-flex max-w-full rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">{[["Q", Math.round(researcher.queryRelevanceNorm || 0), "text-emerald-300"], ["R", formatNumber(researcher.recentCitations || 0), "text-orange-300"]].map(([label, value, color]) => <div key={label} title={metricDescription(label as string)} className="rounded-md border border-white/8 bg-black/10 p-2"><div className={cn("font-mono text-lg font-extrabold", color as string)}>{value}</div><div className="text-[10px] text-slate-500">{label}</div></div>)}</div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button onClick={onToggleSave} className={cn("rounded-md border border-white/8 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved" : "Save"}</button>
+              <button onClick={onOpenDetail} className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Details</button>
+              <a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md border border-white/8 py-2 text-center text-xs text-slate-400 hover:text-slate-100"><ExternalLink className="mr-1 inline h-3.5 w-3.5" />Google</a>
+              <button onClick={onAskAi} className="rounded-md border border-cyan-400/25 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10"><Bot className="mr-1 inline h-3.5 w-3.5" />Ask AI</button>
+            </div>
+          </div>
           <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 4).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-2.5 py-1 text-[11px] font-semibold text-blue-100">{topic}</span>)}</div></div>
         </>
       ) : (
         <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4 text-sm text-slate-500">Select a researcher to inspect profile metrics, reliability hints, and returned backend fields.</div>
       )}
       <div className="mt-4">
-        <ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} />
+        <ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} autoRequest={autoRequest} />
       </div>
     </aside>
   );
 }
 
-function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; weights: Record<WeightKey, number>; onToggleSave: () => void; onBack: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
+function DetailPage({ researcher, isSaved, user, weights, settings, query, list, autoRequest, onToggleSave, onAskAi, onBack, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; weights: Record<WeightKey, number>; settings: AppSettings; query: string; list: ResearcherRecord[]; autoRequest?: AiAutoRequest; onToggleSave: () => void; onAskAi: () => void; onBack: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
   const paperCitationSample = researcher.papers.reduce((sum, paper) => sum + paper.citations, 0);
   const citationCoverage = citationCoverageRatio(researcher);
   const rawSnapshot = rawResearcherSnapshot(researcher);
@@ -1529,7 +1681,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
   ];
   return (
     <main className="h-screen overflow-y-auto bg-[#05070b] text-slate-100">
-      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/8 bg-[#070a10]/95 px-8 py-4 backdrop-blur"><button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-100"><ArrowLeft className="h-4 w-4" />Back to results</button><div className="flex items-center gap-2"><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400 hover:text-slate-100"><ExternalLink className="mr-1 inline h-3.5 w-3.5" />Google Search</a><button onClick={onToggleSave} className={cn("rounded-md border border-white/10 px-3 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved" : "Save Researcher"}</button><TopActions user={user} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenAuth={onOpenAuth} /></div></header>
+      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/8 bg-[#070a10]/95 px-8 py-4 backdrop-blur"><button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-100"><ArrowLeft className="h-4 w-4" />Back to results</button><div className="flex items-center gap-2"><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400 hover:text-slate-100"><ExternalLink className="mr-1 inline h-3.5 w-3.5" />Google Search</a><button onClick={onAskAi} className="rounded-md border border-cyan-400/25 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10"><Bot className="mr-1 inline h-3.5 w-3.5" />Ask AI</button><button onClick={onToggleSave} className={cn("rounded-md border border-white/10 px-3 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved" : "Save Researcher"}</button><TopActions user={user} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenAuth={onOpenAuth} /></div></header>
       <div className="mx-auto max-w-[1040px] px-8 py-8">
         <section className="rounded-xl border border-white/8 bg-white/[0.025] p-6"><div className="flex items-center gap-5"><div className="relative flex h-20 w-20 items-center justify-center rounded-xl border border-blue-500/40 bg-blue-500/15 text-2xl font-bold text-blue-100">{researcher.initials || initials(researcher.name)}<Sparkles className="absolute -bottom-2 -right-2 h-5 w-5 rounded-full bg-blue-600 p-1 text-white" /></div><div><h1 className="text-3xl font-bold">{researcher.name}</h1><AffiliationSummary researcher={researcher} className="mt-1 text-sm text-slate-400" /><div className="mt-3 flex flex-wrap gap-2 text-[10px] font-semibold text-blue-200"><span className="rounded-full bg-white/8 px-3 py-1">{affiliationDisplay(researcher).country || "n/a"}</span><span className="rounded-full bg-white/8 px-3 py-1">Active since {researcher.careerStartYear || "n/a"}</span><span className="rounded-full bg-blue-500/15 px-3 py-1">{researcher.primaryTopic}</span><span title={researcher.matchReason || researcher.whyMatched} className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-cyan-200">{matchSourceLabel(researcher.matchSource)}</span></div></div></div></section>
         <section className="mt-6 grid grid-cols-4 gap-4">
@@ -1542,6 +1694,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onBack, 
             </div>
           ))}
         </section>
+        <section className="mt-6"><ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} autoRequest={autoRequest} /></section>
         <section className="mt-6"><RankingBreakdown researcher={researcher} weights={weights} /></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />AI Explanation</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">The backend profile does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
@@ -1596,7 +1749,9 @@ export default function Home() {
   const [filters, setFilters] = useState<Filters>(defaultFilters);
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [detailId, setDetailId] = useState<string | undefined>();
-  const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
+  const [savedProfiles, setSavedProfiles] = useState<Record<string, ResearcherRecord>>(() => readStoredSavedProfiles());
+  const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set(Object.keys(readStoredSavedProfiles())));
+  const [aiAutoRequest, setAiAutoRequest] = useState<AiAutoRequest | undefined>();
   const [searchHistory, setSearchHistory] = useState<string[]>(() => [DEFAULT_QUERY, "quantum machine learning", "post-quantum cryptography", "thermal properties of materials"]);
   const [page, setPage] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => readStoredSettings());
@@ -1613,11 +1768,14 @@ export default function Home() {
     persistSettings(settings);
   }, [settings]);
   useEffect(() => {
+    persistSavedProfiles(savedProfiles);
+  }, [savedProfiles]);
+  useEffect(() => {
     apiRequest<{ user: CurrentUser | null }>("/api/auth/me").then((result) => setCurrentUser(result.user || undefined)).catch(() => setCurrentUser(undefined));
   }, []);
   useEffect(() => {
     if (!currentUser) return;
-    apiRequest<{ savedIds: string[] }>("/api/saved-researchers").then((result) => setSavedIds(new Set(result.savedIds))).catch(() => undefined);
+    apiRequest<{ savedIds: string[] }>("/api/saved-researchers").then((result) => setSavedIds((prev) => new Set([...Array.from(prev), ...result.savedIds]))).catch(() => undefined);
   }, [currentUser]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -1646,23 +1804,34 @@ export default function Home() {
       });
     return () => controller.abort();
   }, [activeQuery, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear]);
-  const countries = useMemo(() => Array.from(new Set(researcherResults.map((researcher) => researcher.country).filter(Boolean))).sort().slice(0, 80), [researcherResults]);
+  useEffect(() => {
+    if (researcherResults.length === 0 || savedIds.size === 0) return;
+    setSavedProfiles((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const researcher of researcherResults) {
+        if (savedIds.has(researcher.id)) {
+          next[researcher.id] = researcher;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [researcherResults, savedIds]);
+  const countries = useMemo(() => Array.from(new Set(researcherResults.map((researcher) => researcher.country).filter((country) => country && country !== "Unknown"))).sort(), [researcherResults]);
   const scored = useMemo(() => {
     const filtered = researcherResults.filter((researcher) => filters.country === "All" || researcher.country === filters.country);
-    const qNorm = normalizedMetricMap(filtered, (researcher) => researcher.queryRelevanceScore ?? researcher.relevanceScore ?? researcherNameMatchScore(researcher, activeQuery));
     const rNorm = normalizedMetricMap(filtered, (researcher) => researcher.recentCitations || 0, true);
     const base = filtered
       .map((researcher) => {
-        const queryNorm = qNorm.get(researcher.id) || 0;
+        const queryNorm = Math.min(100, Math.max(0, percentFromUnit(researcher.queryRelevanceScore ?? researcher.relevanceScore ?? researcherNameMatchScore(researcher, activeQuery))));
         const researchNorm = rNorm.get(researcher.id) || 0;
         const score = finalRankingScore(queryNorm, researchNorm, filters.weights);
         const rankedResearcher = { ...researcher, queryRelevanceNorm: queryNorm, recentCitationImpactNorm: researchNorm, finalScore: score };
         return { researcher: rankedResearcher, relevance: researcher.queryRelevanceScore ?? researcher.relevanceScore ?? 0, score };
       })
       .sort((a, b) => b.score - a.score || (b.researcher.queryRelevanceNorm || 0) - (a.researcher.queryRelevanceNorm || 0) || (b.researcher.recentCitationImpactNorm || 0) - (a.researcher.recentCitationImpactNorm || 0) || b.relevance - a.relevance);
-    const frontier = paretoIds(base.slice(0, 200).map((item) => item.researcher));
     if (filters.pool === "top10") return base.slice(0, 10);
-    if (filters.pool === "frontier") return base.filter((item) => frontier.has(item.researcher.id));
     return base;
   }, [activeQuery, researcherResults, filters]);
   const sortedScored = useMemo(() => {
@@ -1679,28 +1848,49 @@ export default function Home() {
   const currentPage = Math.min(page, totalPages - 1);
   const pageStart = currentPage * PAGE_SIZE;
   const pagedResults = resultList.slice(pageStart, pageStart + PAGE_SIZE);
-  const selected = resultList.find((researcher) => researcher.id === selectedId) ?? pagedResults[0] ?? resultList[0];
-  const detail = resultList.find((researcher) => researcher.id === detailId) ?? researcherResults.find((researcher) => researcher.id === detailId);
-  const savedResearchers = Array.from(savedIds).map((id) => researcherResults.find((researcher) => researcher.id === id)).filter((researcher): researcher is ResearcherRecord => Boolean(researcher));
-  const rankMap = new Map(resultList.map((researcher, index) => [researcher.id, index + 1]));
-  const chartResearchers = currentPage === 0 ? pagedResults : [...resultList.slice(0, 10), ...pagedResults.filter((researcher) => !resultList.slice(0, 10).some((top) => top.id === researcher.id))];
+  const knownResearcherMap = useMemo(() => {
+    const map = new Map<string, ResearcherRecord>();
+    for (const researcher of Object.values(savedProfiles)) map.set(researcher.id, researcher);
+    for (const researcher of researcherResults) map.set(researcher.id, researcher);
+    for (const researcher of resultList) map.set(researcher.id, researcher);
+    return map;
+  }, [savedProfiles, researcherResults, resultList]);
+  const selected = (selectedId ? knownResearcherMap.get(selectedId) : undefined) ?? pagedResults[0] ?? resultList[0];
+  const detail = detailId ? knownResearcherMap.get(detailId) : undefined;
+  const savedResearchers = Array.from(savedIds).map((id) => knownResearcherMap.get(id)).filter((researcher): researcher is ResearcherRecord => Boolean(researcher));
   const runSearch = (nextQuery?: string) => { const value = (nextQuery ?? query).trim() || DEFAULT_QUERY; setQuery(value); setActiveQuery(value); setSelectedId(undefined); setPage(0); setFilters((prev) => ({ ...prev, pool: "pool" })); if (settings.searchHistory) setSearchHistory((prev) => [value, ...prev.filter((item) => item.toLowerCase() !== value.toLowerCase())].slice(0, 10)); };
   const changeTableSort = (key: TableSortKey) => {
     setTableSort((prev) => (prev.key === key ? { key, direction: prev.direction === "desc" ? "asc" : "desc" } : { key, direction: key === "rank" ? "asc" : "desc" }));
     setPage(0);
   };
-  const toggleSave = (id: string) => setSavedIds((prev) => {
+  const toggleSave = (researcherOrId: ResearcherRecord | string) => setSavedIds((prev) => {
+    const id = typeof researcherOrId === "string" ? researcherOrId : researcherOrId.id;
+    const researcher = typeof researcherOrId === "string" ? knownResearcherMap.get(researcherOrId) : researcherOrId;
     const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      setSavedProfiles((profiles) => {
+        const updated = { ...profiles };
+        delete updated[id];
+        return updated;
+      });
+    } else {
+      next.add(id);
+      if (researcher) setSavedProfiles((profiles) => ({ ...profiles, [id]: researcher }));
+    }
     if (currentUser) {
       apiRequest<{ savedIds: string[] }>("/api/saved-researchers", { method: "PUT", body: JSON.stringify({ savedIds: Array.from(next) }) }).catch(() => undefined);
     }
     return next;
   });
+  const askAiAboutResearcher = (researcher: ResearcherRecord) => {
+    setSelectedId(researcher.id);
+    setAiAutoRequest({ id: Date.now(), researcherId: researcher.id, prompt: researcherAiPrompt(researcher, activeQuery) });
+  };
   const logout = async () => {
     await apiRequest<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => ({ ok: true }));
     setCurrentUser(undefined);
-    setSavedIds(new Set());
+    setSavedIds(new Set(Object.keys(readStoredSavedProfiles())));
   };
   const historyForSearch = settings.searchHistory ? searchHistory : [];
   const requestedSearchSource = "ranking backend";
@@ -1711,34 +1901,26 @@ export default function Home() {
   const appScaleStyle = {
     "--ui-scale": String(uiScale),
     "--filter-rail-width": `${Math.round(Math.min(320, Math.max(220, 260 * uiScale)))}px`,
-    "--side-summary-width": `${Math.round(Math.min(300, Math.max(240, 280 * uiScale)))}px`,
-    "--researcher-table-min-width": `${Math.round(Math.min(820, Math.max(600, 660 * uiScale)))}px`,
+    "--side-summary-width": `${Math.round(Math.min(280, Math.max(220, 260 * uiScale)))}px`,
+    "--researcher-table-min-width": `${Math.round(Math.min(760, Math.max(560, 620 * uiScale)))}px`,
     "--floating-chat-width": `${Math.round(560 * uiScale)}px`,
     "--floating-chat-height": `${Math.round(640 * uiScale)}px`,
     fontSize: `${interfaceScale}%`,
   } as React.CSSProperties & Record<string, string>;
   const content = detail ? (
-    <DetailPage researcher={detail} isSaved={savedIds.has(detail.id)} user={currentUser} weights={filters.weights} onToggleSave={() => toggleSave(detail.id)} onBack={() => setDetailId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
+    <DetailPage researcher={detail} isSaved={savedIds.has(detail.id)} user={currentUser} weights={filters.weights} settings={settings} query={activeQuery} list={pagedResults} autoRequest={aiAutoRequest} onToggleSave={() => toggleSave(detail)} onAskAi={() => askAiAboutResearcher(detail)} onBack={() => setDetailId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
   ) : !activeQuery ? (
     <LandingPage query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} settings={settings} user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
   ) : (
     <main className="flex h-screen flex-col overflow-hidden bg-[#05070b] text-slate-100">
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-white/8 bg-[#070a10] px-4"><button className="flex items-center gap-2 text-sm font-bold" onClick={() => { setActiveQuery(""); setDetailId(undefined); }}><span className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-600"><Sparkles className="h-4 w-4" /></span>ResearchAI</button><SearchInputWithHistory query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} compact /><button onClick={() => runSearch()} className="rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-500">Search</button><div className="ml-auto"><TopActions user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} /></div></header>
       <div className="flex min-h-0 flex-1">
-        <FilterRail filters={filters} setFilters={setFilters} countries={countries} chartResearchers={chartResearchers} selected={selected} savedResearchers={savedResearchers} rankMap={rankMap} onSelect={(researcher) => setSelectedId(researcher.id)} />
+        <FilterRail filters={filters} setFilters={setFilters} countries={countries} selected={selected} savedResearchers={savedResearchers} onSelect={(researcher) => setSelectedId(researcher.id)} onToggleSave={toggleSave} />
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/8 bg-[#070a10] px-4">
-            <div className="text-sm text-slate-400">Results for <span className="font-bold text-slate-100">"{activeQuery}"</span></div>
-            <div className="flex items-center gap-2 text-[11px] text-slate-500">
-              <span>{searchLoading ? `Searching ${requestedSearchSource}...` : `${resultList.length} researchers`}</span>
-              {!searchLoading && searchMeta?.sourceLabel && <span className="rounded bg-white/5 px-2 py-1 text-[10px] text-slate-500">{searchMeta.sourceLabel}</span>}
-            </div>
-          </div>
-          <AutoAnalysisPanel list={resultList.slice(0, 30)} query={activeQuery} loading={searchLoading} searchMode={searchMeta?.searchMode} />
-          <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} />
+          <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} onAskAi={askAiAboutResearcher} />
           <PaginationBar page={currentPage} total={resultList.length} onPageChange={setPage} />
         </section>
-        <SideSummary researcher={selected} isSaved={selected ? savedIds.has(selected.id) : false} onToggleSave={() => selected && toggleSave(selected.id)} onOpenDetail={() => selected && setDetailId(selected.id)} list={pagedResults} query={activeQuery} settings={settings} weights={filters.weights} />
+        <SideSummary researcher={selected} isSaved={selected ? savedIds.has(selected.id) : false} onToggleSave={() => selected && toggleSave(selected)} onOpenDetail={() => selected && setDetailId(selected.id)} onAskAi={() => selected && askAiAboutResearcher(selected)} list={pagedResults} query={activeQuery} settings={settings} autoRequest={aiAutoRequest} />
       </div>
     </main>
   );
