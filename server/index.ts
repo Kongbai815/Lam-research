@@ -3,7 +3,7 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import { handleAiChatRequest } from "./ai";
-import { handleGetSaved, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./auth";
+import { handleGetSaved, handleGetUserSettings, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetAiSettings, handleSetSaved } from "./auth";
 import { handleRankingHealthRequest, handleRankingRankRequest } from "./ranking";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,7 +15,7 @@ async function startServer() {
   app.use(express.json({ limit: "1mb" }));
 
   app.post("/api/ai/chat", async (req, res) => {
-    await handleAiChatRequest(req.body, res);
+    await handleAiChatRequest(req, req.body, res);
   });
 
   app.post("/api/auth/request-code", (req, res) => {
@@ -52,6 +52,14 @@ async function startServer() {
 
   app.put("/api/saved-researchers", (req, res) => {
     handleSetSaved(req, req.body, res);
+  });
+
+  app.get("/api/user-settings", (req, res) => {
+    handleGetUserSettings(req, res);
+  });
+
+  app.put("/api/user-settings/ai", (req, res) => {
+    handleSetAiSettings(req, req.body, res);
   });
 
   app.get("/api/ranking/health", async (_req, res) => {

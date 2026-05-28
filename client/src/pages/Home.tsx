@@ -18,6 +18,7 @@ type ProviderKey = "gpt" | "gemini" | "claude" | "custom";
 type ApiKeyStorageChoice = "remember" | "forget";
 type ModelPreset = { label: string; value: string; description: string };
 type AiAutoRequest = { id: number; prompt: string; researcherId?: string };
+type AccountAiSettings = { provider: ProviderKey; apiBaseUrl: string; model: string; hasApiKey: boolean; updatedAt?: string };
 type SearchMeta = {
   resultCount: number;
   worksSampled: number;
@@ -93,16 +94,19 @@ interface AppSettings {
 }
 
 const DEFAULT_QUERY = "quantum computing algorithms";
+const BRAND_NAME = "ScholarLens AI";
+const BRAND_DOMAIN = "scholarlens.ai";
+const TEAM_CREDIT = "Built by Yitong Wang, Tuhina Priya, and Zhike";
 const PAGE_SIZE = 20;
 const RESULT_LIMIT = 100;
 const SAVED_PROFILE_STORAGE_KEY = "research-ai-saved-profiles";
 const DEFAULT_INVESTMENT_PROMPT = [
-  "Assume you are evaluating whether to invest in or support this academic researcher in the context of the current search query.",
+  "Assume you are evaluating whether this academic researcher is a strong candidate for further academic review, collaboration, or support in the context of the current search query.",
   "Summarize the person's relevance to the query, depth and breadth of research, recent citation-window impact, institutional or lab context, collaboration potential, and visible risks or data gaps.",
-  "Use only the provided ranking/profile context. Do not invent facts, and do not mention LAM or any private business intent.",
+  "Use only the provided ranking/profile context. Do not invent facts, and do not mention any private sponsor or private business intent.",
   "End with a concise recommendation: strong candidate, worth reviewing, or lower priority, with the reason."
 ].join(" ");
-const TOPIC_FALLBACK = ["Quantum computing algorithms", "AI in healthcare", "Post-quantum cryptography", "Vision-language models", "Smart agriculture AI"];
+const TOPIC_FALLBACK = ["Machine learning", "Computer vision", "Natural language processing", "Robotics", "AI in healthcare", "Post-quantum cryptography", "Quantum computing algorithms", "Materials informatics"];
 const searchModeOptions: Array<{ value: SearchModeChoice; label: string; placeholder: string }> = [
   { value: "auto", label: "Default", placeholder: "Search researchers, topics, institutions..." },
   { value: "author", label: "Name", placeholder: "Search by researcher name..." },
@@ -444,9 +448,6 @@ function researcherContext(list: ResearcherRecord[]) {
 }
 
 async function requestAiAnswer(settings: AppSettings, messages: ChatMessage[], context?: string) {
-  if (!settings.apiKey.trim()) {
-    throw new Error("Please add an API key in Settings before using AI chat.");
-  }
   const response = await fetch("/api/ai/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -744,6 +745,19 @@ function TopActions({ user, onLogout, onOpenSettings, onOpenAuth }: { user?: Cur
   );
 }
 
+function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className={cn("relative inline-flex items-center justify-center rounded-md bg-blue-600 text-white shadow-[0_0_24px_rgba(37,99,235,.24)]", compact ? "h-7 w-7" : "h-10 w-10")}>
+      <Search className={cn(compact ? "h-3.5 w-3.5" : "h-5 w-5")} />
+      <Sparkles className={cn("absolute -right-1 -top-1 rounded-full bg-cyan-400 p-0.5 text-slate-950", compact ? "h-3 w-3" : "h-4 w-4")} />
+    </span>
+  );
+}
+
+function TeamCredit({ className = "" }: { className?: string }) {
+  return <div className={cn("text-[10px] leading-5 text-slate-600", className)}>{TEAM_CREDIT} · Suggested domain: {BRAND_DOMAIN}</div>;
+}
+
 function providerDefaults(provider: AppSettings["aiProvider"]) {
   if (provider === "claude") return { apiBaseUrl: "https://api.anthropic.com/v1", model: "claude-sonnet-4-20250514" };
   if (provider === "gemini") return { apiBaseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash" };
@@ -751,7 +765,7 @@ function providerDefaults(provider: AppSettings["aiProvider"]) {
   return { apiBaseUrl: "https://api.openai.com/v1", model: "gpt-5.2" };
 }
 
-function SettingsModal({ open, settings, onClose, onChange }: { open: boolean; settings: AppSettings; onClose: () => void; onChange: (settings: AppSettings) => void }) {
+function SettingsModal({ open, settings, user, accountAiSettings, accountAiSaving, onClose, onChange, onSaveAccountAi, onClearAccountAi }: { open: boolean; settings: AppSettings; user?: CurrentUser; accountAiSettings?: AccountAiSettings; accountAiSaving: boolean; onClose: () => void; onChange: (settings: AppSettings) => void; onSaveAccountAi: () => void; onClearAccountAi: () => void }) {
   if (!open) return null;
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => onChange({ ...settings, [key]: value });
   const providerChoice = settings.apiKeyStorageChoice[settings.aiProvider];
@@ -775,6 +789,7 @@ function SettingsModal({ open, settings, onClose, onChange }: { open: boolean; s
         <div className="grid gap-4 md:grid-cols-2">
           <section className="rounded-lg border border-white/8 bg-white/[0.025] p-4">
             <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-300">AI API</h3>
+            <p className="mb-3 text-xs leading-5 text-slate-500">AI can use a server default key, an account-saved key, or a temporary key pasted here.</p>
             <label className="text-xs text-slate-500">Provider</label>
             <select value={settings.aiProvider} onChange={(event) => { const provider = event.target.value as AppSettings["aiProvider"]; const defaults = providerDefaults(provider); onChange({ ...settings, aiProvider: provider, apiBaseUrl: defaults.apiBaseUrl, model: defaults.model, apiKey: settings.savedApiKeys[provider] || "", rememberApiKey: Boolean(settings.savedApiKeys[provider]) }); }} className="mt-1 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-100 outline-none">
               <option value="gpt">GPT / OpenAI compatible</option>
@@ -814,6 +829,21 @@ function SettingsModal({ open, settings, onClose, onChange }: { open: boolean; s
                 <p className="mt-2 text-xs leading-5 text-slate-500">{storedKey ? "This provider key is stored only in this browser on this device." : "Your key is used only for live AI requests unless you choose to save it on this device."}</p>
               </>
             )}
+            <div className="mt-3 rounded-md border border-white/8 bg-black/10 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-slate-200">Account AI settings</div>
+                  <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                    {user ? accountAiSettings?.hasApiKey ? "An encrypted API key is saved to your account." : "Save a key to your account so AI works across devices." : "Log in to save AI settings to your account."}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button disabled={!user || accountAiSaving} onClick={onSaveAccountAi} className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-45">Save</button>
+                  {accountAiSettings?.hasApiKey && <button disabled={!user || accountAiSaving} onClick={onClearAccountAi} className="rounded-md border border-white/10 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/[0.04] disabled:opacity-45">Clear key</button>}
+                </div>
+              </div>
+              {accountAiSettings && <p className="mt-2 text-[10px] text-slate-600">Account model: {accountAiSettings.model || "default"} · provider: {accountAiSettings.provider}</p>}
+            </div>
             <label className="mt-3 block text-xs text-slate-500">Model preset</label>
             <select
               value={selectedPreset?.value || "__custom"}
@@ -1335,8 +1365,8 @@ function LandingPage({ query, setQuery, onSearch, history, searchMode, setSearch
       <div className="absolute left-6 top-5"><button onClick={onOpenSettings} className="rounded-md border border-white/10 bg-white/[0.025] px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/[0.06] hover:text-slate-100"><Settings className="mr-1 inline h-3.5 w-3.5" />Settings</button></div>
       <div className="absolute right-6 top-5"><TopActions user={user} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenAuth={onOpenAuth} /></div>
       <div className="mb-8 flex flex-col items-center">
-        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600"><Sparkles className="h-5 w-5 text-white" /></div>
-        <h1 className="text-4xl font-bold tracking-tight" style={{ fontFamily: "'Sora', sans-serif" }}>ResearchAI</h1>
+        <div className="mb-3"><BrandMark /></div>
+        <h1 className="text-4xl font-bold tracking-tight" style={{ fontFamily: "'Sora', sans-serif" }}>{BRAND_NAME}</h1>
         <p className="mt-2 text-sm text-slate-500">AI-powered academic researcher search</p>
       </div>
       <div className="w-full max-w-[640px]">
@@ -1350,7 +1380,7 @@ function LandingPage({ query, setQuery, onSearch, history, searchMode, setSearch
         {topics.map((topic) => <button key={topic} className="rounded-full border border-white/8 px-3 py-1 hover:border-blue-500/50 hover:text-slate-200" onClick={() => { setSearchMode("topic"); setQuery(topic.toLowerCase()); onSearch(topic.toLowerCase()); }}>{topic}</button>)}
       </div>
       <ChatFloatingButton query={query} settings={settings} />
-      <footer className="absolute bottom-6 text-[11px] text-slate-600">ResearchAI - AI-powered academic search - ranking backend data</footer>
+      <footer className="absolute bottom-6 text-center text-[11px] text-slate-600">{BRAND_NAME} · AI-powered academic search · ranking backend data<br /><TeamCredit /></footer>
     </main>
   );
 }
@@ -1396,6 +1426,7 @@ function FilterRail({ filters, setFilters, countries, selected, savedResearchers
       <Section id="type" title="Researcher Type" filters={filters} setFilters={setFilters}>
         <div className="grid grid-cols-1 gap-1.5">{[["pool", "Pool"], ["top10", "Top 10"]].map(([value, label]) => <button key={value} onClick={() => setFilters({ ...filters, pool: value as ResearcherPool })} className={cn("rounded-md border px-3 py-2 text-left text-xs", filters.pool === value ? "border-blue-500/50 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-400")}>{label}</button>)}</div>
       </Section>
+      <TeamCredit className="pt-4" />
     </aside>
   );
 }
@@ -1633,7 +1664,7 @@ function RankingBreakdown({ researcher, weights, compact = false }: { researcher
   );
 }
 
-function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, onAskAi, list, query, settings, autoRequest }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; onAskAi: () => void; list: ResearcherRecord[]; query: string; settings: AppSettings; autoRequest?: AiAutoRequest }) {
+function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, onAskAi }: { researcher?: ResearcherRecord; isSaved: boolean; onToggleSave: () => void; onOpenDetail: () => void; onAskAi: () => void }) {
   return (
     <aside className="w-[var(--side-summary-width)] shrink-0 overflow-y-auto border-l border-white/8 bg-[#070a10] p-4">
       {researcher ? (
@@ -1661,14 +1692,64 @@ function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, onAskAi,
       ) : (
         <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4 text-sm text-slate-500">Select a researcher to inspect profile metrics, reliability hints, and returned backend fields.</div>
       )}
-      <div className="mt-4">
-        <ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} autoRequest={autoRequest} />
-      </div>
     </aside>
   );
 }
 
-function DetailPage({ researcher, isSaved, user, weights, settings, query, list, autoRequest, onToggleSave, onAskAi, onBack, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; weights: Record<WeightKey, number>; settings: AppSettings; query: string; list: ResearcherRecord[]; autoRequest?: AiAutoRequest; onToggleSave: () => void; onAskAi: () => void; onBack: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
+function AiSummaryPage({ researcher, isSaved, user, query, list, settings, autoRequest, onBack, onToggleSave, onOpenDetail, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; query: string; list: ResearcherRecord[]; settings: AppSettings; autoRequest?: AiAutoRequest; onBack: () => void; onToggleSave: () => void; onOpenDetail: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
+  const affiliation = affiliationDisplay(researcher);
+  return (
+    <main className="h-screen overflow-y-auto bg-[#05070b] text-slate-100">
+      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/8 bg-[#070a10]/95 px-8 py-4 backdrop-blur">
+        <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-100"><ArrowLeft className="h-4 w-4" />Back to results</button>
+        <div className="flex items-center gap-2">
+          <a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400 hover:text-slate-100"><ExternalLink className="mr-1 inline h-3.5 w-3.5" />Google Search</a>
+          <button onClick={onOpenDetail} className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400 hover:text-slate-100">Profile details</button>
+          <button onClick={onToggleSave} className={cn("rounded-md border border-white/10 px-3 py-2 text-xs hover:text-slate-100", isSaved ? "text-blue-300" : "text-slate-400")}>{isSaved ? <BookmarkCheck className="mr-1 inline h-3.5 w-3.5" /> : <Bookmark className="mr-1 inline h-3.5 w-3.5" />}{isSaved ? "Saved" : "Save"}</button>
+          <TopActions user={user} onLogout={onLogout} onOpenSettings={onOpenSettings} onOpenAuth={onOpenAuth} />
+        </div>
+      </header>
+      <div className="mx-auto grid max-w-[1180px] gap-5 px-8 py-8 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className="space-y-4">
+          <section className="rounded-xl border border-white/8 bg-white/[0.025] p-5">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-blue-500/40 bg-blue-500/15 text-lg font-bold text-blue-100">{researcher.initials || initials(researcher.name)}</div>
+              <div className="min-w-0">
+                <h1 className="truncate text-xl font-bold">{researcher.name}</h1>
+                <AffiliationSummary researcher={researcher} className="text-sm text-slate-400" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-md border border-white/8 bg-black/10 p-3"><div className="font-mono text-xl font-bold text-emerald-300">{Math.round(researcher.queryRelevanceNorm || 0)}</div><div className="text-[10px] text-slate-500">Q relevance</div></div>
+              <div className="rounded-md border border-white/8 bg-black/10 p-3"><div className="font-mono text-xl font-bold text-orange-300">{formatNumber(researcher.recentCitations || 0)}</div><div className="text-[10px] text-slate-500">R impact</div></div>
+            </div>
+            <div className="mt-4 space-y-2 text-xs leading-5 text-slate-500">
+              <p><span className="text-slate-300">Query:</span> {query || "n/a"}</p>
+              <p><span className="text-slate-300">Institution:</span> {affiliation.primary}</p>
+              <p><span className="text-slate-300">Topic:</span> {researcher.primaryTopic}</p>
+              <p><span className="text-slate-300">Context H-index:</span> {researcher.hIndex}</p>
+            </div>
+          </section>
+          <section className="rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] p-4 text-xs leading-6 text-slate-400">
+            This page generates a profile brief in the context of the current query. It uses only visible ranking/profile data and the editable prompt; it should not mention any private sponsor or business intent.
+          </section>
+        </aside>
+        <section className="min-w-0">
+          <div className="mb-4 flex items-center gap-3">
+            <BrandMark compact />
+            <div>
+              <h2 className="text-2xl font-bold">AI researcher summary</h2>
+              <p className="text-sm text-slate-500">Generated review page for {researcher.name}</p>
+            </div>
+          </div>
+          <ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} autoRequest={autoRequest} />
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onAskAi, onBack, onLogout, onOpenSettings, onOpenAuth }: { researcher: ResearcherRecord; isSaved: boolean; user?: CurrentUser; weights: Record<WeightKey, number>; onToggleSave: () => void; onAskAi: () => void; onBack: () => void; onLogout: () => void; onOpenSettings: () => void; onOpenAuth: (mode: AuthMode) => void }) {
   const paperCitationSample = researcher.papers.reduce((sum, paper) => sum + paper.citations, 0);
   const citationCoverage = citationCoverageRatio(researcher);
   const rawSnapshot = rawResearcherSnapshot(researcher);
@@ -1694,9 +1775,8 @@ function DetailPage({ researcher, isSaved, user, weights, settings, query, list,
             </div>
           ))}
         </section>
-        <section className="mt-6"><ResultsAiPanel list={list} query={query} settings={settings} researcher={researcher} autoRequest={autoRequest} /></section>
         <section className="mt-6"><RankingBreakdown researcher={researcher} weights={weights} /></section>
-        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />AI Explanation</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
+        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />Profile Context</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">The backend profile does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6">
           <h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Source Data & Reliability</h2>
@@ -1749,12 +1829,15 @@ export default function Home() {
   const [filters, setFilters] = useState<Filters>(defaultFilters);
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [detailId, setDetailId] = useState<string | undefined>();
+  const [aiSummaryId, setAiSummaryId] = useState<string | undefined>();
   const [savedProfiles, setSavedProfiles] = useState<Record<string, ResearcherRecord>>(() => readStoredSavedProfiles());
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set(Object.keys(readStoredSavedProfiles())));
   const [aiAutoRequest, setAiAutoRequest] = useState<AiAutoRequest | undefined>();
   const [searchHistory, setSearchHistory] = useState<string[]>(() => [DEFAULT_QUERY, "quantum machine learning", "post-quantum cryptography", "thermal properties of materials"]);
   const [page, setPage] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => readStoredSettings());
+  const [accountAiSettings, setAccountAiSettings] = useState<AccountAiSettings | undefined>();
+  const [accountAiSaving, setAccountAiSaving] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode | undefined>();
   const [currentUser, setCurrentUser] = useState<CurrentUser | undefined>();
@@ -1776,6 +1859,23 @@ export default function Home() {
   useEffect(() => {
     if (!currentUser) return;
     apiRequest<{ savedIds: string[] }>("/api/saved-researchers").then((result) => setSavedIds((prev) => new Set([...Array.from(prev), ...result.savedIds]))).catch(() => undefined);
+  }, [currentUser]);
+  useEffect(() => {
+    if (!currentUser) {
+      setAccountAiSettings(undefined);
+      return;
+    }
+    apiRequest<{ aiSettings?: AccountAiSettings }>("/api/user-settings").then((result) => {
+      setAccountAiSettings(result.aiSettings);
+      if (result.aiSettings) {
+        setSettings((prev) => ({
+          ...prev,
+          aiProvider: result.aiSettings?.provider || prev.aiProvider,
+          apiBaseUrl: result.aiSettings?.apiBaseUrl || prev.apiBaseUrl,
+          model: result.aiSettings?.model || prev.model,
+        }));
+      }
+    }).catch(() => setAccountAiSettings(undefined));
   }, [currentUser]);
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -1857,6 +1957,7 @@ export default function Home() {
   }, [savedProfiles, researcherResults, resultList]);
   const selected = (selectedId ? knownResearcherMap.get(selectedId) : undefined) ?? pagedResults[0] ?? resultList[0];
   const detail = detailId ? knownResearcherMap.get(detailId) : undefined;
+  const aiSummaryResearcher = aiSummaryId ? knownResearcherMap.get(aiSummaryId) : undefined;
   const savedResearchers = Array.from(savedIds).map((id) => knownResearcherMap.get(id)).filter((researcher): researcher is ResearcherRecord => Boolean(researcher));
   const runSearch = (nextQuery?: string) => { const value = (nextQuery ?? query).trim() || DEFAULT_QUERY; setQuery(value); setActiveQuery(value); setSelectedId(undefined); setPage(0); setFilters((prev) => ({ ...prev, pool: "pool" })); if (settings.searchHistory) setSearchHistory((prev) => [value, ...prev.filter((item) => item.toLowerCase() !== value.toLowerCase())].slice(0, 10)); };
   const changeTableSort = (key: TableSortKey) => {
@@ -1885,7 +1986,52 @@ export default function Home() {
   });
   const askAiAboutResearcher = (researcher: ResearcherRecord) => {
     setSelectedId(researcher.id);
+    setDetailId(undefined);
+    setAiSummaryId(researcher.id);
     setAiAutoRequest({ id: Date.now(), researcherId: researcher.id, prompt: researcherAiPrompt(researcher, activeQuery) });
+  };
+  const saveAccountAiSettings = async () => {
+    if (!currentUser) return;
+    setAccountAiSaving(true);
+    try {
+      const result = await apiRequest<{ aiSettings: AccountAiSettings }>("/api/user-settings/ai", {
+        method: "PUT",
+        body: JSON.stringify({
+          provider: settings.aiProvider,
+          apiBaseUrl: settings.apiBaseUrl,
+          model: settings.model,
+          ...(settings.apiKey.trim() ? { apiKey: settings.apiKey.trim() } : {}),
+        }),
+      });
+      setAccountAiSettings(result.aiSettings);
+      if (settings.apiKey.trim()) {
+        setSettings((prev) => {
+          const savedApiKeys = { ...prev.savedApiKeys };
+          delete savedApiKeys[prev.aiProvider];
+          return { ...prev, apiKey: "", rememberApiKey: false, savedApiKeys, apiKeyStorageChoice: { ...prev.apiKeyStorageChoice, [prev.aiProvider]: "forget" } };
+        });
+      }
+    } finally {
+      setAccountAiSaving(false);
+    }
+  };
+  const clearAccountAiKey = async () => {
+    if (!currentUser) return;
+    setAccountAiSaving(true);
+    try {
+      const result = await apiRequest<{ aiSettings: AccountAiSettings }>("/api/user-settings/ai", {
+        method: "PUT",
+        body: JSON.stringify({
+          provider: settings.aiProvider,
+          apiBaseUrl: settings.apiBaseUrl,
+          model: settings.model,
+          clearApiKey: true,
+        }),
+      });
+      setAccountAiSettings(result.aiSettings);
+    } finally {
+      setAccountAiSaving(false);
+    }
   };
   const logout = async () => {
     await apiRequest<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => ({ ok: true }));
@@ -1907,27 +2053,29 @@ export default function Home() {
     "--floating-chat-height": `${Math.round(640 * uiScale)}px`,
     fontSize: `${interfaceScale}%`,
   } as React.CSSProperties & Record<string, string>;
-  const content = detail ? (
-    <DetailPage researcher={detail} isSaved={savedIds.has(detail.id)} user={currentUser} weights={filters.weights} settings={settings} query={activeQuery} list={pagedResults} autoRequest={aiAutoRequest} onToggleSave={() => toggleSave(detail)} onAskAi={() => askAiAboutResearcher(detail)} onBack={() => setDetailId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
+  const content = aiSummaryResearcher ? (
+    <AiSummaryPage researcher={aiSummaryResearcher} isSaved={savedIds.has(aiSummaryResearcher.id)} user={currentUser} query={activeQuery} list={pagedResults} settings={settings} autoRequest={aiAutoRequest} onToggleSave={() => toggleSave(aiSummaryResearcher)} onOpenDetail={() => { setAiSummaryId(undefined); setDetailId(aiSummaryResearcher.id); }} onBack={() => setAiSummaryId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
+  ) : detail ? (
+    <DetailPage researcher={detail} isSaved={savedIds.has(detail.id)} user={currentUser} weights={filters.weights} onToggleSave={() => toggleSave(detail)} onAskAi={() => askAiAboutResearcher(detail)} onBack={() => setDetailId(undefined)} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
   ) : !activeQuery ? (
     <LandingPage query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} settings={settings} user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} />
   ) : (
     <main className="flex h-screen flex-col overflow-hidden bg-[#05070b] text-slate-100">
-      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-white/8 bg-[#070a10] px-4"><button className="flex items-center gap-2 text-sm font-bold" onClick={() => { setActiveQuery(""); setDetailId(undefined); }}><span className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-600"><Sparkles className="h-4 w-4" /></span>ResearchAI</button><SearchInputWithHistory query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} compact /><button onClick={() => runSearch()} className="rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-500">Search</button><div className="ml-auto"><TopActions user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} /></div></header>
+      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-white/8 bg-[#070a10] px-4"><button className="flex items-center gap-2 text-sm font-bold" onClick={() => { setActiveQuery(""); setDetailId(undefined); setAiSummaryId(undefined); }}><BrandMark compact />{BRAND_NAME}</button><SearchInputWithHistory query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} compact /><button onClick={() => runSearch()} className="rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-500">Search</button><div className="ml-auto"><TopActions user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} /></div></header>
       <div className="flex min-h-0 flex-1">
         <FilterRail filters={filters} setFilters={setFilters} countries={countries} selected={selected} savedResearchers={savedResearchers} onSelect={(researcher) => setSelectedId(researcher.id)} onToggleSave={toggleSave} />
         <section className="flex min-w-0 flex-1 flex-col">
           <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} onAskAi={askAiAboutResearcher} />
           <PaginationBar page={currentPage} total={resultList.length} onPageChange={setPage} />
         </section>
-        <SideSummary researcher={selected} isSaved={selected ? savedIds.has(selected.id) : false} onToggleSave={() => selected && toggleSave(selected)} onOpenDetail={() => selected && setDetailId(selected.id)} onAskAi={() => selected && askAiAboutResearcher(selected)} list={pagedResults} query={activeQuery} settings={settings} autoRequest={aiAutoRequest} />
+        <SideSummary researcher={selected} isSaved={selected ? savedIds.has(selected.id) : false} onToggleSave={() => selected && toggleSave(selected)} onOpenDetail={() => selected && setDetailId(selected.id)} onAskAi={() => selected && askAiAboutResearcher(selected)} />
       </div>
     </main>
   );
   return (
     <div className={cn(settings.theme === "light" && "theme-light")} style={appScaleStyle}>
       {content}
-      <SettingsModal open={settingsOpen} settings={settings} onClose={() => setSettingsOpen(false)} onChange={setSettings} />
+      <SettingsModal open={settingsOpen} settings={settings} user={currentUser} accountAiSettings={accountAiSettings} accountAiSaving={accountAiSaving} onClose={() => setSettingsOpen(false)} onChange={setSettings} onSaveAccountAi={saveAccountAiSettings} onClearAccountAi={clearAccountAiKey} />
       <AuthModal mode={authMode} onClose={() => setAuthMode(undefined)} onModeChange={setAuthMode} onAuthenticated={setCurrentUser} />
     </div>
   );

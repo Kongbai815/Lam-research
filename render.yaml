@@ -17,3 +17,19 @@ services:
         value: "false"
       - key: RANKING_API_URL
         value: https://researcher-ranking-szk6rqcdwa-uc.a.run.app
+      - key: RESEARCH_AI_SECRET
+        generateValue: true
+      - key: DEFAULT_AI_PROVIDER
+        value: gpt
+      - key: DEFAULT_AI_API_BASE_URL
+        value: https://api.openai.com/v1
+      - key: DEFAULT_AI_MODEL
+        value: gpt-5.2
+      - key: DEFAULT_AI_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false

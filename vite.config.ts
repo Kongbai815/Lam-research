@@ -6,7 +6,7 @@ import path from "node:path";
 import { defineConfig, type Plugin, type ViteDevServer } from "vite";
 import { vitePluginManusRuntime } from "vite-plugin-manus-runtime";
 import { handleAiChatRequest } from "./server/ai";
-import { handleGetSaved, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetSaved } from "./server/auth";
+import { handleGetSaved, handleGetUserSettings, handleGoogleCallback, handleGoogleStart, handleLogin, handleLogout, handleMe, handleRegister, handleRequestCode, handleSetAiSettings, handleSetSaved } from "./server/auth";
 import { handleRankingHealthRequest, handleRankingRankRequest } from "./server/ranking";
 
 // =============================================================================
@@ -109,7 +109,7 @@ function vitePluginManusDebugCollector(): Plugin {
         });
         req.on("end", async () => {
           try {
-            await handleAiChatRequest(JSON.parse(body || "{}"), res);
+            await handleAiChatRequest(req, JSON.parse(body || "{}"), res);
           } catch (error) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
@@ -138,6 +138,8 @@ function vitePluginManusDebugCollector(): Plugin {
         if (req.method === "GET" && route === "/auth/me") return handleMe(req, res);
         if (req.method === "GET" && route === "/saved-researchers") return handleGetSaved(req, res);
         if (req.method === "PUT" && route === "/saved-researchers") return readBody((body) => handleSetSaved(req, body, res));
+        if (req.method === "GET" && route === "/user-settings") return handleGetUserSettings(req, res);
+        if (req.method === "PUT" && route === "/user-settings/ai") return readBody((body) => handleSetAiSettings(req, body, res));
         if (req.method === "GET" && route === "/ranking/health") return handleRankingHealthRequest({}, res);
         if (req.method === "POST" && route === "/ranking/rank") return readBody((body) => handleRankingRankRequest(body, res));
         return next();

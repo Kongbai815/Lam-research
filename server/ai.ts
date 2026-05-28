@@ -1,15 +1,24 @@
+import { getUserAiSettingsForRequest } from "./auth";
+
 interface ChatMessage {
   role: "assistant" | "user" | "system";
   content: string;
 }
 
 interface AiChatRequest {
-  provider: "gpt" | "gemini" | "claude" | "custom";
+  provider?: "gpt" | "gemini" | "claude" | "custom";
   apiBaseUrl?: string;
   apiKey?: string;
   model?: string;
   messages: ChatMessage[];
   context?: string;
+}
+
+interface AiRuntimeSettings {
+  provider?: AiChatRequest["provider"];
+  apiBaseUrl?: string;
+  apiKey?: string;
+  model?: string;
 }
 
 function jsonResponse(res: { writeHead: (status: number, headers: Record<string, string>) => void; end: (body: string) => void }, status: number, payload: unknown) {
@@ -32,6 +41,32 @@ function responseText(data: any) {
 
 function usesOpenAiResponses(model: string) {
   return new Set(["gpt-5.2-pro", "gpt-5.2-codex", "gpt-5-pro"]).has(model);
+}
+
+function defaultAiSettings(): AiRuntimeSettings {
+  const provider = (process.env.DEFAULT_AI_PROVIDER || "gpt") as AiChatRequest["provider"];
+  return {
+    provider,
+    apiBaseUrl: process.env.DEFAULT_AI_API_BASE_URL || (provider === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : provider === "claude" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1"),
+    model: process.env.DEFAULT_AI_MODEL || (provider === "gemini" ? "gemini-2.5-flash" : provider === "claude" ? "claude-sonnet-4-20250514" : "gpt-5.2"),
+    apiKey: process.env.DEFAULT_AI_API_KEY || process.env.OPENAI_API_KEY || "",
+  };
+}
+
+function resolveRuntimeRequest(request: AiChatRequest, accountSettings?: AiRuntimeSettings): AiChatRequest {
+  const defaults = defaultAiSettings();
+  const provider = request.provider || accountSettings?.provider || defaults.provider || "gpt";
+  const apiKey = request.apiKey?.trim() || accountSettings?.apiKey?.trim() || defaults.apiKey?.trim() || "";
+  if (!apiKey) {
+    throw new Error("No AI API key is configured. Add a key in Settings, save it to your account, or set DEFAULT_AI_API_KEY/OPENAI_API_KEY on the server.");
+  }
+  return {
+    ...request,
+    provider,
+    apiBaseUrl: request.apiBaseUrl?.trim() || accountSettings?.apiBaseUrl?.trim() || defaults.apiBaseUrl,
+    model: request.model?.trim() || accountSettings?.model?.trim() || defaults.model,
+    apiKey,
+  };
 }
 
 async function callOpenAiResponses(request: AiChatRequest, model: string, baseUrl: string) {
@@ -153,18 +188,19 @@ async function callClaude(request: AiChatRequest) {
   return content as string;
 }
 
-export async function resolveAiChat(request: AiChatRequest) {
+export async function resolveAiChat(request: AiChatRequest, accountSettings?: AiRuntimeSettings) {
   if (!Array.isArray(request.messages) || request.messages.length === 0) {
     throw new Error("At least one chat message is required.");
   }
-  if (request.provider === "gemini") return callGemini(request);
-  if (request.provider === "claude") return callClaude(request);
-  return callOpenAiCompatible(request);
+  const resolved = resolveRuntimeRequest(request, accountSettings);
+  if (resolved.provider === "gemini") return callGemini(resolved);
+  if (resolved.provider === "claude") return callClaude(resolved);
+  return callOpenAiCompatible(resolved);
 }
 
-export async function handleAiChatRequest(body: unknown, res: { writeHead: (status: number, headers: Record<string, string>) => void; end: (body: string) => void }) {
+export async function handleAiChatRequest(req: any, body: unknown, res: { writeHead: (status: number, headers: Record<string, string>) => void; end: (body: string) => void }) {
   try {
-    const answer = await resolveAiChat(body as AiChatRequest);
+    const answer = await resolveAiChat(body as AiChatRequest, getUserAiSettingsForRequest(req));
     jsonResponse(res, 200, { answer });
   } catch (error) {
     jsonResponse(res, 400, { error: error instanceof Error ? error.message : String(error) });

@@ -14,6 +14,16 @@ interface UserRecord {
   avatarUrl?: string;
 }
 
+interface StoredAiSettings {
+  provider?: "gpt" | "gemini" | "claude" | "custom";
+  apiBaseUrl?: string;
+  model?: string;
+  encryptedApiKey?: string;
+  apiKeyIv?: string;
+  apiKeyTag?: string;
+  updatedAt?: string;
+}
+
 interface VerificationRecord {
   identifier: string;
   code: string;
@@ -31,6 +41,7 @@ interface AppDb {
   verificationCodes: VerificationRecord[];
   sessions: SessionRecord[];
   savedResearchers: Record<string, string[]>;
+  userSettings: Record<string, { ai?: StoredAiSettings }>;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
@@ -41,7 +52,7 @@ const GOOGLE_STATE_TTL_SECONDS = 10 * 60;
 const SHOW_DEV_CODE = process.env.NODE_ENV !== "production" || process.env.RESEARCH_AI_SHOW_DEV_CODE === "true";
 
 function emptyDb(): AppDb {
-  return { users: [], verificationCodes: [], sessions: [], savedResearchers: {} };
+  return { users: [], verificationCodes: [], sessions: [], savedResearchers: {}, userSettings: {} };
 }
 
 function ensureDb() {
@@ -71,6 +82,33 @@ function hashPassword(password: string, salt: string) {
   return crypto.scryptSync(password, salt, 64).toString("hex");
 }
 
+function encryptionKey() {
+  const secret = process.env.RESEARCH_AI_SECRET || process.env.SESSION_SECRET || "research-ai-local-development-secret";
+  return crypto.createHash("sha256").update(secret).digest();
+}
+
+function encryptSecret(value: string) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  return {
+    encryptedApiKey: encrypted.toString("base64"),
+    apiKeyIv: iv.toString("base64"),
+    apiKeyTag: cipher.getAuthTag().toString("base64"),
+  };
+}
+
+function decryptSecret(settings?: StoredAiSettings) {
+  if (!settings?.encryptedApiKey || !settings.apiKeyIv || !settings.apiKeyTag) return "";
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(settings.apiKeyIv, "base64"));
+    decipher.setAuthTag(Buffer.from(settings.apiKeyTag, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(settings.encryptedApiKey, "base64")), decipher.final()]).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
 function createToken() {
   return crypto.randomBytes(32).toString("hex");
 }
@@ -95,6 +133,22 @@ function sendJson(res: any, status: number, payload: unknown, cookies: string[] 
 
 function publicUser(user: UserRecord) {
   return { id: user.id, identifier: user.identifier, createdAt: user.createdAt, displayName: user.displayName, avatarUrl: user.avatarUrl };
+}
+
+function publicAiSettings(settings?: StoredAiSettings) {
+  if (!settings) return undefined;
+  return {
+    provider: settings.provider || "gpt",
+    apiBaseUrl: settings.apiBaseUrl || "",
+    model: settings.model || "",
+    hasApiKey: Boolean(settings.encryptedApiKey),
+    updatedAt: settings.updatedAt,
+  };
+}
+
+function normalizeProvider(value: unknown): StoredAiSettings["provider"] {
+  const provider = String(value || "gpt");
+  return provider === "gemini" || provider === "claude" || provider === "custom" ? provider : "gpt";
 }
 
 function secureCookieSuffix() {
@@ -297,4 +351,49 @@ export function handleSetSaved(req: any, body: any, res: any) {
   db.savedResearchers[user.id] = Array.from(new Set(savedIds));
   writeDb(db);
   sendJson(res, 200, { savedIds: db.savedResearchers[user.id] });
+}
+
+export function getUserAiSettingsForRequest(req: any) {
+  const user = getCurrentUser(req);
+  if (!user) return undefined;
+  const db = readDb();
+  const ai = db.userSettings[user.id]?.ai;
+  if (!ai) return undefined;
+  return {
+    provider: ai.provider,
+    apiBaseUrl: ai.apiBaseUrl,
+    model: ai.model,
+    apiKey: decryptSecret(ai),
+  };
+}
+
+export function handleGetUserSettings(req: any, res: any) {
+  const user = getCurrentUser(req);
+  if (!user) return sendJson(res, 401, { error: "Login required." });
+  const db = readDb();
+  sendJson(res, 200, { aiSettings: publicAiSettings(db.userSettings[user.id]?.ai) });
+}
+
+export function handleSetAiSettings(req: any, body: any, res: any) {
+  const user = getCurrentUser(req);
+  if (!user) return sendJson(res, 401, { error: "Login required." });
+  const db = readDb();
+  const previous = db.userSettings[user.id]?.ai || {};
+  const next: StoredAiSettings = {
+    ...previous,
+    provider: normalizeProvider(body?.provider),
+    apiBaseUrl: String(body?.apiBaseUrl || "").trim(),
+    model: String(body?.model || "").trim(),
+    updatedAt: new Date().toISOString(),
+  };
+  if (body?.clearApiKey) {
+    delete next.encryptedApiKey;
+    delete next.apiKeyIv;
+    delete next.apiKeyTag;
+  } else if (typeof body?.apiKey === "string" && body.apiKey.trim()) {
+    Object.assign(next, encryptSecret(body.apiKey.trim()));
+  }
+  db.userSettings[user.id] = { ...(db.userSettings[user.id] || {}), ai: next };
+  writeDb(db);
+  sendJson(res, 200, { aiSettings: publicAiSettings(next) });
 }
