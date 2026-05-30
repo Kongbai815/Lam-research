@@ -3,7 +3,7 @@ type JsonResponse = {
   end: (body: string) => void;
 };
 
-const DEFAULT_RANKING_TIMEOUT_MS = 30000;
+const DEFAULT_RANKING_TIMEOUT_MS = 60000;
 const DEFAULT_Q_WEIGHT = 0.7;
 const DEFAULT_R_WEIGHT = 0.3;
 

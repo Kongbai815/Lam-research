@@ -1834,6 +1834,7 @@ export default function Home() {
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set(Object.keys(readStoredSavedProfiles())));
   const [aiAutoRequest, setAiAutoRequest] = useState<AiAutoRequest | undefined>();
   const [searchHistory, setSearchHistory] = useState<string[]>(() => [DEFAULT_QUERY, "quantum machine learning", "post-quantum cryptography", "thermal properties of materials"]);
+  const [searchRunId, setSearchRunId] = useState(0);
   const [page, setPage] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => readStoredSettings());
   const [accountAiSettings, setAccountAiSettings] = useState<AccountAiSettings | undefined>();
@@ -1903,7 +1904,7 @@ export default function Home() {
         if (!controller.signal.aborted) setSearchLoading(false);
       });
     return () => controller.abort();
-  }, [activeQuery, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear]);
+  }, [activeQuery, searchRunId, searchMode, appliedYearRange.minYear, appliedYearRange.maxYear]);
   useEffect(() => {
     if (researcherResults.length === 0 || savedIds.size === 0) return;
     setSavedProfiles((prev) => {
@@ -1959,7 +1960,7 @@ export default function Home() {
   const detail = detailId ? knownResearcherMap.get(detailId) : undefined;
   const aiSummaryResearcher = aiSummaryId ? knownResearcherMap.get(aiSummaryId) : undefined;
   const savedResearchers = Array.from(savedIds).map((id) => knownResearcherMap.get(id)).filter((researcher): researcher is ResearcherRecord => Boolean(researcher));
-  const runSearch = (nextQuery?: string) => { const value = (nextQuery ?? query).trim() || DEFAULT_QUERY; setQuery(value); setActiveQuery(value); setSelectedId(undefined); setPage(0); setFilters((prev) => ({ ...prev, pool: "pool" })); if (settings.searchHistory) setSearchHistory((prev) => [value, ...prev.filter((item) => item.toLowerCase() !== value.toLowerCase())].slice(0, 10)); };
+  const runSearch = (nextQuery?: string) => { const value = (nextQuery ?? query).trim() || DEFAULT_QUERY; setQuery(value); setActiveQuery(value); setSearchRunId((id) => id + 1); setSelectedId(undefined); setPage(0); setFilters((prev) => ({ ...prev, pool: "pool" })); if (settings.searchHistory) setSearchHistory((prev) => [value, ...prev.filter((item) => item.toLowerCase() !== value.toLowerCase())].slice(0, 10)); };
   const changeTableSort = (key: TableSortKey) => {
     setTableSort((prev) => (prev.key === key ? { key, direction: prev.direction === "desc" ? "asc" : "desc" } : { key, direction: key === "rank" ? "asc" : "desc" }));
     setPage(0);
@@ -2041,7 +2042,7 @@ export default function Home() {
   const historyForSearch = settings.searchHistory ? searchHistory : [];
   const requestedSearchSource = "ranking backend";
   const displayedSearchSource = searchMeta?.sourceLabel || requestedSearchSource;
-  const emptyState = searchError || (searchLoading ? `Searching ${requestedSearchSource}...` : `No researchers found for this query from ${displayedSearchSource}.`);
+  const emptyState = searchError || (searchLoading ? `Searching ${requestedSearchSource}... first request can take up to a minute while the backend wakes up.` : `No researchers found for this query from ${displayedSearchSource}.`);
   const interfaceScale = Math.min(125, Math.max(80, Number(settings.interfaceScale) || 100));
   const uiScale = interfaceScale / 100;
   const appScaleStyle = {
