@@ -5,8 +5,7 @@ import { cn } from "@/lib/utils";
 
 type WeightKey = "query" | "research";
 type ResearcherPool = "pool" | "top10" | "frontier";
-type ChartMode = "q-r" | "q-h" | "r-h";
-type TableSortKey = "rank" | "query" | "hIndex" | "recentCitations";
+type TableSortKey = "rank" | "query" | "recentCitations";
 type SortDirection = "asc" | "desc";
 type SearchModeChoice = "auto" | "author" | "topic" | "institution";
 type ChatMessage = { role: "assistant" | "user"; content: string };
@@ -74,7 +73,6 @@ interface Filters {
   maxYear: number;
   country: string;
   pool: ResearcherPool;
-  chartMode: ChartMode;
   open: Record<string, boolean>;
 }
 
@@ -169,7 +167,6 @@ const defaultFilters: Filters = {
   maxYear: YEAR_MAX,
   country: "All",
   pool: "pool",
-  chartMode: "q-r",
   open: { saved: true, ranking: true, frontier: true, year: true, country: false, type: false },
 };
 
@@ -428,7 +425,6 @@ function metricDescription(label: string) {
 
 function tableSortValue(researcher: ResearcherRecord, key: TableSortKey) {
   if (key === "query") return researcher.queryRelevanceNorm || 0;
-  if (key === "hIndex") return researcher.hIndex;
   if (key === "recentCitations") return researcher.recentCitations || 0;
   return 0;
 }
@@ -1189,76 +1185,12 @@ function ResultsAiPanel({ list, query, settings, researcher, autoRequest }: { li
   );
 }
 
-function uniqueShortlist(items: Array<{ researcher?: ResearcherRecord; label: string; reason: string }>) {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    if (!item.researcher || seen.has(item.researcher.id)) return false;
-    seen.add(item.researcher.id);
-    return true;
-  }).slice(0, 3) as Array<{ researcher: ResearcherRecord; label: string; reason: string }>;
-}
-
-function AutoAnalysisPanel({ list, query, loading, searchMode }: { list: ResearcherRecord[]; query: string; loading: boolean; searchMode?: SearchMeta["searchMode"] }) {
-  if (loading) {
-    return <section className="border-b border-white/8 bg-[#070a10] px-4 py-3 text-xs text-slate-500">Preparing automatic research brief...</section>;
-  }
-  if (list.length === 0) return null;
-  const top = list[0];
-  const sortedByQuery = [...list].sort((a, b) => (b.queryRelevanceNorm || 0) - (a.queryRelevanceNorm || 0));
-  const sortedByImpact = [...list].sort((a, b) => (b.recentCitationImpactNorm || 0) - (a.recentCitationImpactNorm || 0));
-  const bestQuery = sortedByQuery[0];
-  const bestImpact = sortedByImpact.find((researcher) => researcher.id !== bestQuery?.id) || sortedByImpact[0];
-  const focused =
-    list.find((researcher) => researcher.id !== bestQuery?.id && researcher.id !== bestImpact?.id && (researcher.queryRelevanceNorm || 0) >= 60) ||
-    list.find((researcher) => researcher.id !== bestQuery?.id && researcher.id !== bestImpact?.id) ||
-    list[2];
-  const shortlist = uniqueShortlist([
-    { researcher: bestQuery, label: "Best query fit", reason: `Q ${Math.round(bestQuery?.queryRelevanceNorm || 0)} with ${formatNumber(bestQuery?.totalWorks || 0)} matched works.` },
-    { researcher: bestImpact, label: "Recent impact standout", reason: `${formatNumber(bestImpact?.recentCitations || 0)} R citations in the selected window.` },
-    { researcher: focused, label: "Specialized candidate", reason: `${focused?.primaryTopic || "Topic"}; active since ${focused?.careerStartYear || "n/a"}.` },
-  ]);
-  const modeCopy = searchMode === "institution" ? "This is a strong institution-filter search, so Q mostly reflects whether the researcher matched the searched institution." : searchMode === "author" ? "This is a strong author-name search, so exact and near-exact name matches are prioritized." : "This is a query search, so Q reflects topical fit and R reflects recent citation-window impact.";
-  return (
-    <section className="border-b border-white/8 bg-[#070a10] px-4 py-3">
-      <div className="rounded-lg border border-cyan-400/15 bg-cyan-400/[0.045] p-3">
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <h2 className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-cyan-100"><Sparkles className="h-3.5 w-3.5 text-cyan-300" />AI Analysis</h2>
-          <span className="text-[10px] text-slate-500">Auto-generated from visible Q/R signals</span>
-        </div>
-        <p className="text-xs leading-5 text-slate-400">
-          For "{query}", {top.name} currently ranks highest overall. {modeCopy} Use the shortlist below as a starting point for closer review, not as a final judgment.
-        </p>
-        <div className="mt-3 grid gap-2 lg:grid-cols-3">
-          {shortlist.map((item) => (
-            <div key={item.researcher.id} className="rounded-md border border-white/8 bg-black/10 px-3 py-2">
-              <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-cyan-200">{item.label}</div>
-              <div className="mt-1 truncate text-sm font-semibold text-slate-100">{item.researcher.name}</div>
-              <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-500">{item.reason}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-const chartModeOptions: Array<{ value: ChartMode; label: string }> = [
-  { value: "q-r", label: "Q / R trade-off" },
-];
-
-function chartAxes(mode: ChartMode) {
-  if (mode === "q-h") return { x: "q" as const, y: "h" as const, xLabel: "Q Relevance", yLabel: "H-Index" };
-  if (mode === "r-h") return { x: "r" as const, y: "h" as const, xLabel: "R Impact", yLabel: "H-Index" };
-  return { x: "q" as const, y: "r" as const, xLabel: "Q Relevance", yLabel: "R Impact" };
-}
-
-function metricValue(researcher: ResearcherRecord, metric: "h" | "q" | "r") {
-  if (metric === "h") return researcher.hIndex;
+function metricValue(researcher: ResearcherRecord, metric: "q" | "r") {
   if (metric === "q") return researcher.queryRelevanceNorm || 0;
   return researcher.recentCitationImpactNorm || 0;
 }
 
-function paretoIdsForAxes(list: ResearcherRecord[], xMetric: "h" | "q" | "r", yMetric: "h" | "q" | "r") {
+function paretoIdsForAxes(list: ResearcherRecord[], xMetric: "q" | "r", yMetric: "q" | "r") {
   const ids = new Set<string>();
   for (const candidate of list) {
     const candidateX = metricValue(candidate, xMetric);
@@ -1269,32 +1201,31 @@ function paretoIdsForAxes(list: ResearcherRecord[], xMetric: "h" | "q" | "r", yM
   return ids;
 }
 
-function metricAxisDomain(values: number[], metric: "h" | "q" | "r") {
-  const fallbackMax = metric === "h" ? 200 : 100;
-  if (values.length === 0) return { min: 0, max: fallbackMax };
+function metricAxisDomain(values: number[]) {
+  if (values.length === 0) return { min: 0, max: 100 };
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
   if (maxValue <= minValue) return { min: Math.max(0, minValue - 1), max: minValue + 1 };
   return { min: minValue, max: maxValue };
 }
 
-function chartScale(value: number, domain: { min: number; max: number }, metric: "h" | "q" | "r") {
+function chartScale(value: number, domain: { min: number; max: number }) {
   if (domain.max <= domain.min) return 0;
   return (value - domain.min) / (domain.max - domain.min);
 }
 
-function axisTicks(domain: { min: number; max: number }, metric: "h" | "q" | "r") {
+function axisTicks(domain: { min: number; max: number }) {
   return [domain.min, domain.min + (domain.max - domain.min) * 0.5, domain.max];
 }
 
-function formatAxisValue(value: number, metric: "h" | "q" | "r") {
+function formatAxisValue(value: number) {
   return String(Math.round(value));
 }
 
-function ParetoChart({ list, selected, rankMap, mode, onModeChange, onSelect }: { list: ResearcherRecord[]; selected?: ResearcherRecord; rankMap: Map<string, number>; mode: ChartMode; onModeChange: (mode: ChartMode) => void; onSelect: (researcher: ResearcherRecord) => void }) {
+function ParetoChart({ list, selected, rankMap, onSelect }: { list: ResearcherRecord[]; selected?: ResearcherRecord; rankMap: Map<string, number>; onSelect: (researcher: ResearcherRecord) => void }) {
   const sample = list;
   const topTen = new Set(list.slice(0, 10).map((researcher) => researcher.id));
-  const axes = chartAxes(mode);
+  const axes = { x: "q" as const, y: "r" as const, xLabel: "Q Relevance", yLabel: "R Impact" };
   const frontier = paretoIdsForAxes(sample, axes.x, axes.y);
   const width = 336;
   const height = 210;
@@ -1302,33 +1233,29 @@ function ParetoChart({ list, selected, rankMap, mode, onModeChange, onSelect }: 
   const padRight = 18;
   const padTop = 24;
   const padBottom = 42;
-  const xDomain = metricAxisDomain(sample.map((researcher) => metricValue(researcher, axes.x)), axes.x);
-  const yDomain = metricAxisDomain(sample.map((researcher) => metricValue(researcher, axes.y)), axes.y);
+  const xDomain = metricAxisDomain(sample.map((researcher) => metricValue(researcher, axes.x)));
+  const yDomain = metricAxisDomain(sample.map((researcher) => metricValue(researcher, axes.y)));
   const point = (researcher: ResearcherRecord) => {
-    const x = chartScale(metricValue(researcher, axes.x), xDomain, axes.x);
-    const y = chartScale(metricValue(researcher, axes.y), yDomain, axes.y);
+    const x = chartScale(metricValue(researcher, axes.x), xDomain);
+    const y = chartScale(metricValue(researcher, axes.y), yDomain);
     return { x: padLeft + x * (width - padLeft - padRight), y: height - padBottom - y * (height - padTop - padBottom) };
   };
-  const xTicks = axisTicks(xDomain, axes.x);
-  const yTicks = axisTicks(yDomain, axes.y);
+  const xTicks = axisTicks(xDomain);
+  const yTicks = axisTicks(yDomain);
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-1 gap-2">
-        {chartModeOptions.map((option) => (
-          <button key={option.value} onClick={() => onModeChange(option.value)} className={cn("rounded-md border px-2 py-1.5 text-[10px] font-semibold", mode === option.value ? "border-blue-500/60 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-500 hover:text-slate-200")}>{option.label}</button>
-        ))}
-      </div>
+      <div className="rounded-md border border-blue-500/60 bg-blue-500/15 px-2 py-1.5 text-center text-[10px] font-semibold text-blue-100">Q / R trade-off</div>
       <svg viewBox={`0 0 ${width} ${height}`} className="h-[230px] w-full rounded-md bg-black/20">
         <rect x={padLeft} y={padTop} width={width - padLeft - padRight} height={height - padTop - padBottom} fill="rgba(15,23,42,.42)" />
         <line x1={padLeft} y1={height - padBottom} x2={width - padRight} y2={height - padBottom} stroke="rgba(148,163,184,.38)" />
         <line x1={padLeft} y1={padTop} x2={padLeft} y2={height - padBottom} stroke="rgba(148,163,184,.38)" />
         {xTicks.map((tick) => {
-          const x = padLeft + chartScale(tick, xDomain, axes.x) * (width - padLeft - padRight);
-          return <g key={tick}><line x1={x} y1={height - padBottom} x2={x} y2={height - padBottom + 4} stroke="rgba(148,163,184,.58)" /><text x={x} y={height - 25} textAnchor="middle" fill="rgba(148,163,184,.8)" fontSize="8">{formatAxisValue(tick, axes.x)}</text></g>;
+          const x = padLeft + chartScale(tick, xDomain) * (width - padLeft - padRight);
+          return <g key={tick}><line x1={x} y1={height - padBottom} x2={x} y2={height - padBottom + 4} stroke="rgba(148,163,184,.58)" /><text x={x} y={height - 25} textAnchor="middle" fill="rgba(148,163,184,.8)" fontSize="8">{formatAxisValue(tick)}</text></g>;
         })}
         {yTicks.map((tick) => {
-          const y = height - padBottom - chartScale(tick, yDomain, axes.y) * (height - padTop - padBottom);
-          return <g key={tick}><line x1={padLeft - 4} y1={y} x2={padLeft} y2={y} stroke="rgba(148,163,184,.58)" /><text x={padLeft - 8} y={y + 3} textAnchor="end" fill="rgba(148,163,184,.8)" fontSize="8">{formatAxisValue(tick, axes.y)}</text></g>;
+          const y = height - padBottom - chartScale(tick, yDomain) * (height - padTop - padBottom);
+          return <g key={tick}><line x1={padLeft - 4} y1={y} x2={padLeft} y2={y} stroke="rgba(148,163,184,.58)" /><text x={padLeft - 8} y={y + 3} textAnchor="end" fill="rgba(148,163,184,.8)" fontSize="8">{formatAxisValue(tick)}</text></g>;
         })}
         <text x={(padLeft + width - padRight) / 2} y={height - 7} textAnchor="middle" fill="rgba(226,232,240,.88)" fontSize="9" fontWeight="700">{axes.xLabel}</text>
         <text x={padLeft} y={13} fill="rgba(226,232,240,.88)" fontSize="9" fontWeight="700">{axes.yLabel}</text>
@@ -1420,7 +1347,7 @@ function FilterRail({ filters, setFilters, countries, selected, savedResearchers
         </div>
       </Section>
       <Section id="frontier" title="Q / R Frontier" filters={filters} setFilters={setFilters}>
-        <ParetoChart list={chartList} selected={selected} rankMap={rankMap} mode={filters.chartMode} onModeChange={(chartMode) => setFilters({ ...filters, chartMode })} onSelect={onSelect} />
+        <ParetoChart list={chartList} selected={selected} rankMap={rankMap} onSelect={onSelect} />
       </Section>
       <Section id="year" title="Citation Year Range" filters={filters} setFilters={setFilters}>
         <YearRangeSlider filters={filters} setFilters={setFilters} />
