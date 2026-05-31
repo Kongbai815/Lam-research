@@ -170,7 +170,7 @@ const defaultFilters: Filters = {
   country: "All",
   pool: "pool",
   chartMode: "q-r",
-  open: { saved: true, ranking: true, year: true, country: false, type: false },
+  open: { saved: true, ranking: true, frontier: true, year: true, country: false, type: false },
 };
 
 const COUNTRY_CODE_LABELS: Record<string, string> = {
@@ -1385,7 +1385,7 @@ function LandingPage({ query, setQuery, onSearch, history, searchMode, setSearch
   );
 }
 
-function FilterRail({ filters, setFilters, countries, selected, savedResearchers, onSelect, onToggleSave }: { filters: Filters; setFilters: (filters: Filters) => void; countries: string[]; selected?: ResearcherRecord; savedResearchers: ResearcherRecord[]; onSelect: (researcher: ResearcherRecord) => void; onToggleSave: (researcher: ResearcherRecord) => void }) {
+function FilterRail({ filters, setFilters, countries, selected, savedResearchers, chartList, rankMap, onSelect, onToggleSave }: { filters: Filters; setFilters: (filters: Filters) => void; countries: string[]; selected?: ResearcherRecord; savedResearchers: ResearcherRecord[]; chartList: ResearcherRecord[]; rankMap: Map<string, number>; onSelect: (researcher: ResearcherRecord) => void; onToggleSave: (researcher: ResearcherRecord) => void }) {
   return (
     <aside className="w-[var(--filter-rail-width)] shrink-0 overflow-y-auto border-r border-white/8 bg-[#070a10] px-5 py-5">
       <Section id="saved" title={`Saved Researchers (${savedResearchers.length})`} filters={filters} setFilters={setFilters}>
@@ -1419,12 +1419,15 @@ function FilterRail({ filters, setFilters, countries, selected, savedResearchers
           </div>
         </div>
       </Section>
+      <Section id="frontier" title="Q / R Frontier" filters={filters} setFilters={setFilters}>
+        <ParetoChart list={chartList} selected={selected} rankMap={rankMap} mode={filters.chartMode} onModeChange={(chartMode) => setFilters({ ...filters, chartMode })} onSelect={onSelect} />
+      </Section>
       <Section id="year" title="Citation Year Range" filters={filters} setFilters={setFilters}>
         <YearRangeSlider filters={filters} setFilters={setFilters} />
       </Section>
       <Section id="country" title="Country" filters={filters} setFilters={setFilters}><select value={filters.country} onChange={(event) => setFilters({ ...filters, country: event.target.value })} className="w-full rounded-md border border-white/10 bg-[#0d1119] px-2 py-2 text-xs text-slate-200 outline-none"><option>All</option>{countries.map((country) => <option key={country}>{country}</option>)}</select></Section>
       <Section id="type" title="Researcher Type" filters={filters} setFilters={setFilters}>
-        <div className="grid grid-cols-1 gap-1.5">{[["pool", "Pool"], ["top10", "Top 10"]].map(([value, label]) => <button key={value} onClick={() => setFilters({ ...filters, pool: value as ResearcherPool })} className={cn("rounded-md border px-3 py-2 text-left text-xs", filters.pool === value ? "border-blue-500/50 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-400")}>{label}</button>)}</div>
+        <div className="grid grid-cols-1 gap-1.5">{[["pool", "Pool"], ["top10", "Top 10"], ["frontier", "Frontier"]].map(([value, label]) => <button key={value} onClick={() => setFilters({ ...filters, pool: value as ResearcherPool })} className={cn("rounded-md border px-3 py-2 text-left text-xs", filters.pool === value ? "border-blue-500/50 bg-blue-500/15 text-blue-100" : "border-white/8 text-slate-400")}>{label}</button>)}</div>
       </Section>
       <TeamCredit className="pt-4" />
     </aside>
@@ -1687,7 +1690,7 @@ function SideSummary({ researcher, isSaved, onToggleSave, onOpenDetail, onAskAi 
               <button onClick={onAskAi} className="rounded-md border border-cyan-400/25 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10"><Bot className="mr-1 inline h-3.5 w-3.5" />Ask AI</button>
             </div>
           </div>
-          <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 4).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-2.5 py-1 text-[11px] font-semibold text-blue-100">{topic}</span>)}</div></div>
+          <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.025] p-3.5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-100">Research Topics</h3><div className="flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 4).map((topic, index) => <span key={`${topic}-${index}`} className="rounded-full bg-blue-500/15 px-2.5 py-1 text-[11px] font-semibold text-blue-100">{topic}</span>)}</div></div>
         </>
       ) : (
         <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4 text-sm text-slate-500">Select a researcher to inspect profile metrics, reliability hints, and returned backend fields.</div>
@@ -1776,7 +1779,7 @@ function DetailPage({ researcher, isSaved, user, weights, onToggleSave, onAskAi,
           ))}
         </section>
         <section className="mt-6"><RankingBreakdown researcher={researcher} weights={weights} /></section>
-        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />Profile Context</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic) => <span key={topic} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
+        <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em]"><Sparkles className="h-4 w-4 text-blue-400" />Profile Context</h2><p className="text-sm leading-7 text-slate-400">{researcher.name} is indexed as a {researcher.primaryTopic} researcher in {researcher.field || "computer science"}. For the current ranking, Q_norm is {Math.round(researcher.queryRelevanceNorm || 0)} and R_raw is {formatNumber(researcher.recentCitations || 0)} citations received by matched papers during {researcher.citationStartYear}-{researcher.citationEndYear}. Lifetime citations, total works, and H-index are shown as profile context only. The profile is linked to {affiliationDisplay(researcher).primary} and includes {researcher.collaborators.length} highlighted collaborators.</p><div className="mt-5 flex flex-wrap gap-2">{(researcher.topics.length ? researcher.topics : [researcher.primaryTopic]).slice(0, 6).map((topic, index) => <span key={`${topic}-${index}`} className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-200">{topic}</span>)}</div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6"><h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em]">Contact & Links</h2><div className="grid gap-3 text-sm text-slate-400 sm:grid-cols-2"><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{researcher.searchMode === "institution" ? "Matched institution" : "Institution"}</div><AffiliationSummary researcher={researcher} className="mt-2 text-slate-200" noteClassName="mt-1 text-xs text-cyan-300" /><div className="text-xs text-slate-500">{affiliationDisplay(researcher).country}{researcher.region ? `, ${researcher.region}` : ""}</div></div><div className="rounded-lg border border-white/8 bg-black/10 p-4"><div className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Direct Contact</div><div className="mt-2 text-slate-300">The backend profile does not provide email or phone fields.</div></div></div><div className="mt-4 flex flex-wrap gap-2">{researcher.authorUrl && <a href={researcher.authorUrl} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Author Profile</a>}<a href={googleScholarUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Scholar</a><a href={googleResearcherUrl(researcher)} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500">Google Search</a></div></section>
         <section className="mt-6 rounded-xl border border-white/8 bg-white/[0.025] p-6">
           <h2 className="mb-4 text-sm font-bold uppercase tracking-[0.12em] text-slate-100">Source Data & Reliability</h2>
@@ -1933,8 +1936,14 @@ export default function Home() {
       })
       .sort((a, b) => b.score - a.score || (b.researcher.queryRelevanceNorm || 0) - (a.researcher.queryRelevanceNorm || 0) || (b.researcher.recentCitationImpactNorm || 0) - (a.researcher.recentCitationImpactNorm || 0) || b.relevance - a.relevance);
     if (filters.pool === "top10") return base.slice(0, 10);
+    if (filters.pool === "frontier") {
+      const frontierIds = paretoIds(base.map((item) => item.researcher));
+      return base.filter((item) => frontierIds.has(item.researcher.id));
+    }
     return base;
   }, [activeQuery, researcherResults, filters]);
+  const rankedList = useMemo(() => scored.map((item) => item.researcher), [scored]);
+  const rankMap = useMemo(() => new Map(rankedList.map((researcher, index) => [researcher.id, index + 1])), [rankedList]);
   const sortedScored = useMemo(() => {
     const list = [...scored];
     if (tableSort.key === "rank") return tableSort.direction === "asc" ? list : list.reverse();
@@ -2064,7 +2073,7 @@ export default function Home() {
     <main className="flex h-screen flex-col overflow-hidden bg-[#05070b] text-slate-100">
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-white/8 bg-[#070a10] px-4"><button className="flex items-center gap-2 text-sm font-bold" onClick={() => { setActiveQuery(""); setDetailId(undefined); setAiSummaryId(undefined); }}><BrandMark compact />{BRAND_NAME}</button><SearchInputWithHistory query={query} setQuery={setQuery} onSearch={runSearch} history={historyForSearch} searchMode={searchMode} setSearchMode={setSearchMode} compact /><button onClick={() => runSearch()} className="rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-500">Search</button><div className="ml-auto"><TopActions user={currentUser} onLogout={logout} onOpenSettings={() => setSettingsOpen(true)} onOpenAuth={setAuthMode} /></div></header>
       <div className="flex min-h-0 flex-1">
-        <FilterRail filters={filters} setFilters={setFilters} countries={countries} selected={selected} savedResearchers={savedResearchers} onSelect={(researcher) => setSelectedId(researcher.id)} onToggleSave={toggleSave} />
+        <FilterRail filters={filters} setFilters={setFilters} countries={countries} selected={selected} savedResearchers={savedResearchers} chartList={rankedList} rankMap={rankMap} onSelect={(researcher) => setSelectedId(researcher.id)} onToggleSave={toggleSave} />
         <section className="flex min-w-0 flex-1 flex-col">
           <ResearcherTable list={pagedResults} selected={selected} savedIds={savedIds} startRank={pageStart + 1} emptyState={emptyState} sort={tableSort} onSort={changeTableSort} onSelect={(researcher) => setSelectedId(researcher.id)} onOpenDetail={(researcher) => setDetailId(researcher.id)} onToggleSave={toggleSave} onAskAi={askAiAboutResearcher} />
           <PaginationBar page={currentPage} total={resultList.length} onPageChange={setPage} />
